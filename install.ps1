@@ -30,14 +30,16 @@ function Ensure-RepoReady {
 }
 
 function Remove-Link([string]$path) {
-    if (Test-Path $path) {
+    # Get-Item (not Test-Path): a dangling junction still occupies the name
+    # but Test-Path returns $false for it, which would make re-linking fail.
+    if (Get-Item -LiteralPath $path -ErrorAction SilentlyContinue) {
         Remove-Item -LiteralPath $path -Force -Recurse
         Write-Host "[x] removed $path"
     }
 }
 
 function New-Junction([string]$target, [string]$link) {
-    if (Test-Path $link) { Remove-Link $link }
+    if (Get-Item -LiteralPath $link -ErrorAction SilentlyContinue) { Remove-Link $link }
     New-Item -ItemType Junction -Path $link -Target $target | Out-Null
     Write-Host "[+] linked $link -> $target"
 }
@@ -64,7 +66,10 @@ Get-ChildItem (Join-Path $repo "skills") -Directory | ForEach-Object {
 # 3) prompts (directory junction; absorb foreign files first)
 $agentPrompts = Join-Path $agent "prompts"
 $repoPrompts = Join-Path $repo "prompts"
-if (Test-Path $agentPrompts) {
+$existingPrompts = Get-Item -LiteralPath $agentPrompts -ErrorAction SilentlyContinue
+# absorb foreign files only when prompts is a real directory (not a junction,
+# which may be dangling after a repo rename and would make Get-ChildItem throw)
+if ($existingPrompts -and $existingPrompts.LinkType -ne "Junction") {
     $foreign = Get-ChildItem $agentPrompts -File | Where-Object { $_.Name -notin (Get-ChildItem $repoPrompts -File | ForEach-Object Name) }
     foreach ($f in $foreign) {
         Move-Item $f.FullName $repoPrompts
