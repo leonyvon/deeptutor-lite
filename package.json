@@ -1,0 +1,50 @@
+{
+  "name": "deeptutor-lite",
+  "version": "0.1.0",
+  "description": "Lightweight deeptutor for pi: RAG Q&A (pi-knowledge), Brave web search, multi-KB management, Python runner, quiz/research/solve/visualize workflows, and a full mastery learning path with deterministic + semantic grading",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "deeptutor",
+    "tutor",
+    "learning",
+    "mastery",
+    "quiz",
+    "spaced-repetition",
+    "rag",
+    "knowledge-base"
+  ],
+  "license": "MIT",
+  "author": "LEON",
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
+  },
+  "files": [
+    "extensions",
+    "skills",
+    "prompts",
+    "config.example.json",
+    "README.md"
+  ],
+  "dependencies": {
+    "undici": "^6.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

@@ -1,0 +1,6 @@
+node_modules/
+extensions/config.json
+extensions/.active-kb
+*.db
+*.log
+.DS_Store

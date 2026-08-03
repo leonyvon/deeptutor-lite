@@ -1,0 +1,16 @@
+{
+  "search": {
+    "provider": "brave",
+    "apiKey": "${BRAVE_API_KEY}",
+    "proxy": "http://127.0.0.1:7897",
+    "maxResults": 5
+  },
+  "kb": {
+    "rootDir": "~/deeptutor-kbs",
+    "defaultKB": "default"
+  },
+  "python": {
+    "timeout": 30,
+    "maxTimeout": 300
+  }
+}
