@@ -35,16 +35,25 @@ npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 git clone https://github.com/nczz/pi-knowledge.git ~/.pi/agent/extensions/pi-knowledge
 cd ~/.pi/agent/extensions/pi-knowledge && npm install --legacy-peer-deps
 
-# 3. Create KB directory
+# 3. Clone this package and link it into pi
+git clone <your-repo-url> deeptutor-lite
+cd deeptutor-lite
+./install.ps1          # junctions extension/skills/prompts into ~/.pi/agent
+
+# 4. Create KB directory
 mkdir -p ~/deeptutor-kbs/default
 
-# 4. Set Brave API key (Windows)
+# 5. Set Brave API key (Windows)
 set BRAVE_API_KEY=your-brave-api-key
 
-# 5. Ensure proxy is running
+# 6. Ensure proxy is running
 # Default: http://127.0.0.1:7897
-# Change in ~/.pi/agent/extensions/deeptutor-lite/config.json
+# Change in deeptutor-lite/extensions/config.json
 ```
+
+> **Dev loop**: `install.ps1` creates junctions, so edits in the repo take effect immediately — no reinstall needed. Re-run `install.ps1 -Uninstall` to unlink (repo files stay untouched).
+>
+> **Distribution**: the repo is a standard pi-package (`keywords: ["pi-package"]` + `pi` manifest). Publish to GitHub/npm and install anywhere with `pi install git:...` or `pi install npm:...`.
 
 ### First Run
 
