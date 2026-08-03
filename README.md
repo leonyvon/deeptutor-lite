@@ -96,6 +96,10 @@ pi "what does the document say about X?"
 | Cold start | 5-15s | < 1s |
 | Dependencies | llama-index, FAISS, FastAPI, Next.js | pi agent + pi-knowledge + undici |
 
+## Lessons Learned
+
+开发难点与经验（pi 扩展、pi-knowledge 集成、mastery 设计、agent 交互调试、pi-package 打包）：见 [docs/lessons-learned.md](docs/lessons-learned.md)
+
 ## Architecture
 
 ```
