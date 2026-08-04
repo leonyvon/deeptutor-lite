@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { readFile, writeFile, access } from "node:fs/promises";
+import { readFile, writeFile, access, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -374,8 +374,13 @@ function classifyError(userAnswer: string): ErrorType {
 
 async function readMastery(kbPath: string): Promise<MasteryData | null> {
   const file = join(kbPath, ".mastery.json");
+  let raw: string;
   try {
-    const raw = await readFile(file, "utf-8");
+    raw = await readFile(file, "utf-8");
+  } catch {
+    return null; // no file yet — legitimately "no learning path"
+  }
+  try {
     const data = JSON.parse(raw);
     // Backward compat: normalize old-format topics with ALL new fields defaulted
     data.path = (data.path ?? []).map((t: any) => ({
@@ -423,14 +428,23 @@ async function readMastery(kbPath: string): Promise<MasteryData | null> {
     data.modules = data.modules ?? null;
     data.moduleNames = data.moduleNames ?? null;
     return data;
-  } catch {
-    return null;
+  } catch (e) {
+    // Do NOT swallow: a corrupt file silently reading as "no learning path"
+    // misleads the agent into regenerating and hides real data loss.
+    throw new Error(
+      `Corrupt mastery file ${file}: ${(e as Error).message}. ` +
+      `Repair or delete this file, then re-run mastery_generate / mastery_build.`
+    );
   }
 }
 
 async function writeMastery(kbPath: string, data: MasteryData): Promise<void> {
   const file = join(kbPath, ".mastery.json");
-  await writeFile(file, JSON.stringify(data, null, 2), "utf-8");
+  const tmp = join(kbPath, `.mastery.json.tmp-${process.pid}`);
+  // Atomic write: write temp then rename, so a crashed/concurrent write can
+  // never leave a half-written file that readMastery would choke on.
+  await writeFile(tmp, JSON.stringify(data, null, 2), "utf-8");
+  await rename(tmp, file);
 }
 
 function findTopic(data: MasteryData, topicName: string): MasteryTopic | undefined {
@@ -667,9 +681,14 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
         return {
           content: [{
             type: "text",
-            text: `"${topic.topic}" is a ${topic.type} topic. Instead of quiz, ask the learner to explain it in their own words (Feynman check). If the explanation is correct and complete, call mastery_assess with passed=true.`,
+            text: `Topic "${topic.topic}" WAS FOUND in the learning path for "${params.kb_name}" — the path is readable, this is NOT a storage error. It is a ${topic.type} topic, so mastery_quiz does NOT apply: ${topic.type} topics use the Feynman explanation check instead. Ask the learner to explain "${topic.topic}" in their own words. If the explanation is correct and complete, call mastery_assess(kb_name="${params.kb_name}", topic="${params.topic}", passed=true). Do NOT call mastery_quiz on this topic again.`,
           }],
-          details: { skipQuiz: true, topicType: topic.type },
+          details: {
+            skipQuiz: true,
+            topicType: topic.type,
+            topicFound: true,
+            nextStep: `mastery_assess(kb_name="${params.kb_name}", topic="${params.topic}", passed=true)`,
+          },
         };
       }
 
