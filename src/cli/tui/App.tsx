@@ -17,6 +17,7 @@ import type { DeeptutorRuntime } from "../../agent/harness.js";
 import type { JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import type { UIMessage, AppMode } from "./types.js";
 import { MessageList } from "./MessageList.js";
+import { CommandMenu } from "./CommandMenu.js";
 import { TextInput } from "./TextInput.js";
 import { StatusBar } from "./StatusBar.js";
 import { ModelPicker } from "./ModelPicker.js";
@@ -31,20 +32,23 @@ function nextId(): string {
   return `msg-${++idCounter}`;
 }
 
-const SLASH_COMMANDS = [
-  "/model",
-  "/brave",
-  "/new",
-  "/list",
-  "/switch",
-  "/quiz",
-  "/research",
-  "/solve",
-  "/visualize",
-  "/mastery",
-  "/help",
-  "/quit",
-];
+const COMMAND_DESCRIPTIONS: Record<string, string> = {
+  "/model": "Switch model",
+  "/brave": "Configure Brave search",
+  "/new": "New session",
+  "/list": "List sessions",
+  "/switch": "Switch session",
+  "/quiz": "Generate a quiz",
+  "/research": "Run research agent",
+  "/solve": "Solve step by step",
+  "/visualize": "Create chart/plot",
+  "/mastery": "Start mastery path",
+  "/help": "Show help",
+  "/quit": "Exit",
+};
+
+// Derived in insertion order (keeps existing SLASH_COMMANDS references working)
+const SLASH_COMMANDS = Object.keys(COMMAND_DESCRIPTIONS);
 
 export interface AppProps {
   runtime: DeeptutorRuntime;
@@ -60,6 +64,8 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   const [isProcessing, setIsProcessing] = useState(false);
   const [sessionPath, setSessionPath] = useState("");
   const [scrollOffset, setScrollOffset] = useState(0);
+  const [menuIndex, setMenuIndex] = useState(0);
+  const [menuVisible, setMenuVisible] = useState(false);
 
   const visibleHeight = Math.max(rows - 4, 5); // rows - input(3) - status(1)
 
@@ -222,9 +228,72 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     // For now, keep it simple: only auto-follow when at bottom.
   }, [messages, scrollOffset]);
 
+  // Slash command dropdown palette state
+  const menuOpen =
+    mode.type === "chat" && input.trim().startsWith("/") && menuVisible;
+
+  const menuCommands = useMemo(() => {
+    const q = input.trim().toLowerCase();
+    return SLASH_COMMANDS.filter((c) =>
+      c.toLowerCase().startsWith(q)
+    ).map((name) => ({ name, desc: COMMAND_DESCRIPTIONS[name] ?? "" }));
+  }, [input]);
+
+  // Keep highlight in bounds when the filtered list shrinks (e.g. Tab completion)
+  useEffect(() => {
+    if (menuCommands.length === 0) {
+      setMenuIndex(0);
+      return;
+    }
+    if (menuIndex >= menuCommands.length) {
+      setMenuIndex(menuCommands.length - 1);
+    }
+  }, [menuCommands.length, menuIndex]);
+
+  // Menu keyboard: ↑/↓ move highlight, Tab complete, Esc close.
+  // Enter is handled inside handleSubmit (TextInput fires onSubmit).
+  useInput(
+    (_input, key) => {
+      if (key.upArrow) {
+        setMenuIndex((prev) =>
+          menuCommands.length === 0 ? prev : Math.max(0, prev - 1)
+        );
+      } else if (key.downArrow) {
+        setMenuIndex((prev) =>
+          menuCommands.length === 0
+            ? prev
+            : Math.min(menuCommands.length - 1, prev + 1)
+        );
+      } else if (key.tab) {
+        const cmd = menuCommands[menuIndex];
+        if (cmd) {
+          setInput(cmd.name);
+          setMenuIndex(0);
+          setMenuVisible(true);
+        }
+      } else if (key.escape) {
+        if (input.trim() === "/") {
+          setInput("");
+        }
+        setMenuVisible(false);
+      }
+    },
+    { isActive: menuOpen }
+  );
+
   const handleSubmit = useCallback(
     async (value: string) => {
-      const line = value.trim();
+      let line = value.trim();
+      // Menu open + valid highlight → run the highlighted command instead of
+      // the raw input (opencode palette behavior).
+      if (
+        menuOpen &&
+        menuCommands.length > 0 &&
+        menuIndex >= 0 &&
+        menuIndex < menuCommands.length
+      ) {
+        line = menuCommands[menuIndex].name;
+      }
       if (!line) return;
       setInput("");
 
@@ -514,12 +583,8 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
         setIsProcessing(false);
       }
     },
-    [runtime, exit, repo, sessionPath]
+    [runtime, exit, repo, sessionPath, menuOpen, menuCommands, menuIndex]
   );
-
-  const suggestions = input.startsWith("/")
-    ? SLASH_COMMANDS.filter((c) => c.startsWith(input))
-    : [];
 
   // Scroll info text for status bar
   const scrollInfo = useMemo(() => {
@@ -743,35 +808,34 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
 
       {/* Input area */}
       {mode.type === "chat" && (
-        <Box
-          flexDirection="column"
-          height={3}
-          flexShrink={0}
-          borderStyle="single"
-          borderTop
-          borderColor="gray"
-          paddingX={1}
-        >
-          <Box flexDirection="row">
-            <Text color="cyan">{isProcessing ? "⋯ " : "> "}</Text>
-            <TextInput
-              value={input}
-              onChange={setInput}
-              onSubmit={handleSubmit}
-              placeholder="Ask about your knowledge base… (/help)"
-              focus={!isProcessing}
-            />
+        <Box flexDirection="column" flexShrink={0}>
+          {menuOpen && menuCommands.length > 0 && (
+            <CommandMenu commands={menuCommands} selectedIndex={menuIndex} />
+          )}
+          <Box
+            flexDirection="column"
+            height={3}
+            flexShrink={0}
+            borderStyle="single"
+            borderTop
+            borderColor="gray"
+            paddingX={1}
+          >
+            <Box flexDirection="row">
+              <Text color="cyan">{isProcessing ? "⋯ " : "> "}</Text>
+              <TextInput
+                value={input}
+                onChange={(v) => {
+                  setInput(v);
+                  setMenuIndex(0);
+                  setMenuVisible(v.startsWith("/"));
+                }}
+                onSubmit={handleSubmit}
+                placeholder="Ask about your knowledge base… (/help)"
+                focus={!isProcessing}
+              />
+            </Box>
           </Box>
-          {suggestions.length > 0 &&
-            suggestions.length < SLASH_COMMANDS.length && (
-              <Box flexDirection="row" flexWrap="wrap" gap={1}>
-                {suggestions.map((s) => (
-                  <Text key={s} dimColor>
-                    {s}
-                  </Text>
-                ))}
-              </Box>
-            )}
         </Box>
       )}
 
