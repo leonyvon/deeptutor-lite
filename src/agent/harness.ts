@@ -1,13 +1,15 @@
 /**
  * Agent harness assembly for the deeptutor standalone app.
  *
- * Wires together: pi-ai models (OpenAI-compatible endpoint, e.g. Ollama),
- * pi-agent-core AgentHarness, deeptutor tools, skills/prompt templates,
- * JSONL session, and the interactive tool context (ctx.ask → clack select).
+ * Wires together: pi-ai models (OpenAI-compatible endpoint, e.g. Ollama, or
+ * the built-in OpenCode Zen Go provider), pi-agent-core AgentHarness,
+ * deeptutor tools, skills/prompt templates, JSONL session, and the
+ * interactive tool context (ctx.ask → clack select).
  */
 import { AgentHarness } from "@earendil-works/pi-agent-core";
 import { createModels, createProvider } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
 import type { Model } from "@earendil-works/pi-ai";
 import type { Session } from "@earendil-works/pi-agent-core";
 import type { Config, ToolContext } from "../types.js";
@@ -20,6 +22,8 @@ import { createKnowledgeTools } from "../tools/knowledge.js";
 
 /** OpenAI-compatible provider id (Ollama etc.). */
 export const PROVIDER_ID = "openai-compat";
+/** OpenCode Zen Go provider id (deepseek-v4-flash etc.). */
+export const OPENCODE_GO_PROVIDER_ID = "opencode-go";
 
 const SYSTEM_PROMPT = `You are deeptutor, a document tutoring assistant. You help learners study documents from a knowledge base using:
 - knowledge_search / knowledge_add (RAG over the active knowledge base)
@@ -35,7 +39,23 @@ Rules:
 - Keep explanations concise and well-structured.`;
 
 function buildModels(cfg: Config): { models: ReturnType<typeof createModels>; model: Model<any> } {
+  const models = createModels();
   const modelId = cfg.model.model;
+
+  if (cfg.model.provider === "opencode-go") {
+    // Built-in OpenCode Zen Go provider: models catalog includes
+    // deepseek-v4-flash etc. Auth resolves via OPENCODE_API_KEY.
+    models.setProvider(opencodeGoProvider());
+    const model = models.getModel(OPENCODE_GO_PROVIDER_ID, modelId);
+    if (!model) {
+      throw new Error(
+        `Model "${modelId}" not found in opencode-go provider. Available ids include deepseek-v4-flash, deepseek-v4-pro, glm-5.1, qwen3.6-plus.`
+      );
+    }
+    return { models, model };
+  }
+
+  // Default: custom OpenAI-compatible endpoint (Ollama etc.).
   const model: Model<"openai-completions"> = {
     id: modelId,
     name: modelId,
@@ -66,7 +86,6 @@ function buildModels(cfg: Config): { models: ReturnType<typeof createModels>; mo
     api: openAICompletionsApi(),
   });
 
-  const models = createModels();
   models.setProvider(provider);
   return { models, model: models.getModel(PROVIDER_ID, modelId) ?? model };
 }

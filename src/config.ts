@@ -42,6 +42,7 @@ function defaults(): Config {
       maxTimeout: 300,
     },
     model: {
+      provider: "openai-compat",
       baseUrl: "http://127.0.0.1:11434/v1",
       model: "qwen3:8b",
       embeddingModel: "nomic-embed-text",
@@ -91,7 +92,7 @@ export function loadConfig(): Config {
     search: { ...c.search, apiKey: resolveEnvVars(c.search.apiKey), proxy: c.search.proxy ? expandHome(c.search.proxy) : undefined },
     kb: { ...c.kb, rootDir: expandHome(resolveEnvVars(c.kb.rootDir)), indexDir: expandHome(resolveEnvVars(c.kb.indexDir)), defaultKB: resolveEnvVars(c.kb.defaultKB) },
     python: { ...c.python },
-    model: { ...c.model, baseUrl: resolveEnvVars(c.model.baseUrl), model: resolveEnvVars(c.model.model), embeddingModel: resolveEnvVars(c.model.embeddingModel), apiKey: c.model.apiKey ? resolveEnvVars(c.model.apiKey) : undefined },
+    model: { ...c.model, provider: c.model.provider ?? "openai-compat", baseUrl: resolveEnvVars(c.model.baseUrl), model: resolveEnvVars(c.model.model), embeddingModel: resolveEnvVars(c.model.embeddingModel), apiKey: c.model.apiKey ? resolveEnvVars(c.model.apiKey) : undefined },
     session: { ...c.session, dir: expandHome(resolveEnvVars(c.session.dir)) },
   });
   return resolve(cfg);

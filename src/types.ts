@@ -34,9 +34,15 @@ export interface PythonConfig {
 }
 
 export interface ModelConfig {
+  /**
+   * Provider backend: "openai-compat" (default, any OpenAI-compatible
+   * endpoint such as Ollama) or "opencode-go" (OpenCode Zen Go, key via
+   * OPENCODE_API_KEY, includes deepseek-v4-flash etc.).
+   */
+  provider?: "openai-compat" | "opencode-go";
   /** OpenAI-compatible base URL, e.g. http://127.0.0.1:11434/v1 */
   baseUrl: string;
-  /** Model id, e.g. qwen2.5-coder:14b or llama3.1 */
+  /** Model id, e.g. qwen3:8b or deepseek-v4-flash */
   model: string;
   /** Optional API key for OpenAI-compatible providers. */
   apiKey?: string;
