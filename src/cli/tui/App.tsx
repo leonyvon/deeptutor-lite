@@ -10,7 +10,7 @@
  *   import { inkAsk } from "./cli/tui/ask.js";
  *   const runtime = new DeeptutorRuntime(config, session, inkAsk);
  */
-import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Box, Text, useInput, useApp, useWindowSize } from "ink";
 import { basename } from "node:path";
 import type { DeeptutorRuntime } from "../../agent/harness.js";
@@ -77,10 +77,6 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   const [menuIndex, setMenuIndex] = useState(0);
   const [menuVisible, setMenuVisible] = useState(false);
   const [thinkingTick, setThinkingTick] = useState(0);
-
-  // Mirror of mode.type for the raw-stdin wheel handler (avoids stale closures)
-  const modeRef = useRef(mode.type);
-  modeRef.current = mode.type;
 
   const termWidth = process.stdout.columns ?? 80;
 
@@ -248,52 +244,27 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     return unsub;
   }, []);
 
-  // Scroll handling: PgUp/PgDn when in chat mode and not processing
+  // Scroll handling: ↑/↓ and PgUp/PgDn when in chat mode and not processing.
+  // We deliberately do NOT enable SGR mouse tracking: the terminal translates
+  // the wheel into ↑/↓ arrow keys in the alternate screen, and leaving mouse
+  // events to the terminal preserves native click-drag text selection (pi and
+  // opencode do the same).
   useInput(
     (input, key) => {
+      // While the slash-command palette is open, ↑/↓ belong to menu navigation.
+      if (menuOpen) return;
       if (key.pageUp) {
         setScrollOffset((prev) => clampScroll(prev + 5));
       } else if (key.pageDown) {
         setScrollOffset((prev) => clampScroll(prev - 5));
+      } else if (key.upArrow) {
+        setScrollOffset((prev) => clampScroll(prev + 3));
+      } else if (key.downArrow) {
+        setScrollOffset((prev) => clampScroll(prev - 3));
       }
     },
     { isActive: mode.type === "chat" && !isProcessing }
   );
-
-  // Mouse wheel scrolling (SGR extended mode, xterm 1000+1006).
-  // Enables tracking on mount and restores the terminal on unmount.
-  useEffect(() => {
-    if (!process.stdout.isTTY) return;
-    process.stdout.write("\x1b[?1000h\x1b[?1006h");
-    return () => {
-      process.stdout.write("\x1b[?1000l\x1b[?1006l");
-    };
-  }, []);
-
-  // Consume wheel events from stdin directly; coexists with ink's own
-  // 'readable' listener (Node delivers to both).
-  useEffect(() => {
-    const handler = (chunk: string | Buffer) => {
-      if (modeRef.current !== "chat") return;
-      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      const re = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(text)) !== null) {
-        const btn = Number(m[1]);
-        if (btn === 64) {
-          // wheel up → scroll toward older messages
-          setScrollOffset((prev) => clampScroll(prev + 3));
-        } else if (btn === 65) {
-          // wheel down → scroll toward newest
-          setScrollOffset((prev) => clampScroll(prev - 3));
-        }
-      }
-    };
-    process.stdin.on("data", handler);
-    return () => {
-      process.stdin.removeListener("data", handler);
-    };
-  }, [clampScroll]);
 
   // Global Ctrl+C exit
   useInput((input, key) => {
@@ -957,14 +928,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
               <TextInput
                 value={input}
                 onChange={(v) => {
-                  // ink's useInput dispatch forwards parsed-but-unrecognized
-                  // control sequences (e.g. SGR mouse "\x1b[<64;10;20M") as
-                  // their payload ("[<64;10;20M"); strip it so wheel events
-                  // never corrupt the input value.
-                  const clean = v.replace(/\[<\d+(;\d+)*[Mm]$/g, "");
-                  setInput(clean);
+                  setInput(v);
                   setMenuIndex(0);
-                  setMenuVisible(clean.startsWith("/"));
+                  setMenuVisible(v.startsWith("/"));
                 }}
                 onSubmit={handleSubmit}
                 placeholder={PLACEHOLDER_TEXT}
