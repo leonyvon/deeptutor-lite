@@ -99,6 +99,17 @@ export function ModelPicker({
     [filteredChoices, windowStart]
   );
 
+  // ---- Windowed list for provider step (same pattern) ----
+  const providerWindowStart = useMemo(() => {
+    if (providers.length <= WINDOW_SIZE) return 0;
+    return Math.max(0, Math.min(selectedIndex, providers.length - WINDOW_SIZE));
+  }, [providers.length, selectedIndex]);
+
+  const visibleProviders = useMemo(
+    () => providers.slice(providerWindowStart, providerWindowStart + WINDOW_SIZE),
+    [providers, providerWindowStart]
+  );
+
   // ---- Keyboard handling ----
   useInput(
     (input, key) => {
@@ -176,22 +187,30 @@ export function ModelPicker({
               }`}
       </Text>
       <Box flexDirection="column" marginTop={1}>
-        {/* ---- Provider list ---- */}
+        {/* ---- Provider list (windowed) ---- */}
         {step === "provider" &&
-          providers.map((p, i) => {
+          visibleProviders.map((p, i) => {
+            const globalIdx = providerWindowStart + i;
             const a = authState[p.id];
             const authLabel =
               a && a.needsKey ? (a.configured ? " ✓" : " (needs key)") : "";
             return (
               <Box key={p.id}>
-                <Text color={i === selectedIndex ? "cyan" : undefined}>
-                  {i === selectedIndex ? "> " : "  "}
+                <Text color={globalIdx === selectedIndex ? "cyan" : undefined}>
+                  {globalIdx === selectedIndex ? "> " : "  "}
                   {p.name}
                   <Text dimColor>{authLabel}</Text>
                 </Text>
               </Box>
             );
           })}
+        {step === "provider" && providers.length > WINDOW_SIZE && (
+          <Box marginTop={1}>
+            <Text dimColor>
+              (showing {visibleProviders.length} of {providers.length})
+            </Text>
+          </Box>
+        )}
 
         {/* ---- API key input ---- */}
         {step === "apikey" && providerId && (
