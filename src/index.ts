@@ -49,6 +49,33 @@ async function main(): Promise<void> {
     session = await repo.create({ id: args.sessionId, cwd: process.cwd() });
   }
 
+  // Enter the alternate screen + enable Alternate Scroll (DECSET 1007).
+  // 1007 makes the terminal translate the wheel into ↑/↓ arrow keys inside
+  // the alternate screen WITHOUT enabling mouse tracking, so native click-
+  // drag text selection is preserved (pi/opencode behave the same).
+  // Note: 1007 only takes effect in the alternate screen — in the primary
+  // buffer the wheel would just scroll the (empty) scrollback.
+  if (process.stdout.isTTY) {
+    process.stdout.write("\x1b[?1049h\x1b[?1007h");
+    // Restore the terminal on every exit path (Ctrl+C, /quit, crash).
+    const restore = () => {
+      try {
+        process.stdout.write("\x1b[?1007l\x1b[?1049l");
+      } catch {
+        /* terminal already gone */
+      }
+    };
+    process.on("exit", restore);
+    process.on("SIGINT", () => {
+      restore();
+      process.exit(130);
+    });
+    process.on("SIGTERM", () => {
+      restore();
+      process.exit(143);
+    });
+  }
+
   // Inject the TUI ask callback so tools (mastery_quiz etc.) can present
   // interactive choice questions inside the interface.
   const runtime = new DeeptutorRuntime(config, session, inkAsk);

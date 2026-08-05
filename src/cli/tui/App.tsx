@@ -267,15 +267,6 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     { isActive: mode.type === "chat" && !isProcessing }
   );
 
-  // Alternate Scroll (DECSET 1007): wheel → ↑/↓ arrow keys in the alternate
-  // screen without enabling mouse tracking, so native drag-select survives.
-  useEffect(() => {
-    process.stdout.write("\x1b[?1007h");
-    return () => {
-      process.stdout.write("\x1b[?1007l");
-    };
-  }, []);
-
   // Global Ctrl+C exit
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
