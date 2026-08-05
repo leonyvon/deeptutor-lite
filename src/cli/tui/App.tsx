@@ -10,8 +10,9 @@
  *   import { inkAsk } from "./cli/tui/ask.js";
  *   const runtime = new DeeptutorRuntime(config, session, inkAsk);
  */
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Box, Text, useInput, useApp, useWindowSize } from "ink";
+import { basename } from "node:path";
 import type { DeeptutorRuntime } from "../../agent/harness.js";
 import type { JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import type { UIMessage, AppMode } from "./types.js";
@@ -23,6 +24,7 @@ import { BraveConfig } from "./BraveConfig.js";
 import { SessionPicker } from "./SessionPicker.js";
 import { AskPicker } from "./AskPicker.js";
 import { subscribeAsk, getPendingAsk, resolveAsk } from "./ask.js";
+import { sessionEntriesToMessages, loadSessionPreview } from "./history.js";
 
 let idCounter = 0;
 function nextId(): string {
@@ -57,6 +59,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   const [mode, setMode] = useState<AppMode>({ type: "chat" });
   const [isProcessing, setIsProcessing] = useState(false);
   const [sessionPath, setSessionPath] = useState("");
+  const [scrollOffset, setScrollOffset] = useState(0);
+
+  const visibleHeight = Math.max(rows - 4, 5); // rows - input(3) - status(1)
 
   // Load session path on mount / runtime change
   useEffect(() => {
@@ -144,8 +149,6 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
           if (last && last.type === "assistant" && last.streaming) {
             next[next.length - 1] = { ...last, streaming: false };
           }
-          // Fallback: if the run ended with an error message that never produced
-          // text_delta, it won't have a corresponding UI message. Render it now.
           const lastMsg = event.messages[event.messages.length - 1];
           if (
             lastMsg &&
@@ -192,12 +195,32 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     return unsub;
   }, []);
 
+  // Scroll handling: PgUp/PgDn when in chat mode and not processing
+  useInput(
+    (input, key) => {
+      if (key.pageUp) {
+        setScrollOffset((prev) => prev + 5);
+      } else if (key.pageDown) {
+        setScrollOffset((prev) => Math.max(0, prev - 5));
+      }
+    },
+    { isActive: mode.type === "chat" && !isProcessing }
+  );
+
   // Global Ctrl+C exit
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
       exit();
     }
   });
+
+  // Auto-follow: when new messages arrive and user is at bottom, stay at bottom
+  useEffect(() => {
+    if (scrollOffset === 0) return;
+    // If user has scrolled up, we don't auto-scroll on new messages.
+    // But if the latest message is an error or agent_end, we might want to show it.
+    // For now, keep it simple: only auto-follow when at bottom.
+  }, [messages, scrollOffset]);
 
   const handleSubmit = useCallback(
     async (value: string) => {
@@ -268,6 +291,8 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             await runtime.setSession(session);
             const meta = await session.getMetadata();
             setSessionPath(meta.path);
+            setMessages([]);
+            setScrollOffset(0);
             setMessages((prev) => [
               ...prev,
               {
@@ -318,10 +343,24 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
               ]);
               return;
             }
+            // Load previews for all sessions
+            const previews: Record<string, string> = {};
+            await Promise.all(
+              sessions.map(async (m) => {
+                try {
+                  const s = await repo.open(m);
+                  previews[m.path] = await loadSessionPreview(s);
+                } catch {
+                  previews[m.path] = "";
+                }
+              })
+            );
             let text = "Sessions:\n";
             for (const s of sessions) {
+              const name = basename(s.path);
+              const preview = previews[s.path] ? ` — ${previews[s.path].slice(0, 40)}` : "";
               const mark = s.path === sessionPath ? "▶ " : "  ";
-              text += `${mark}${s.path}\n`;
+              text += `${mark}${name}${preview}\n`;
             }
             setMessages((prev) => [
               ...prev,
@@ -373,9 +412,21 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
               ]);
               return;
             }
+            const previews: Record<string, string> = {};
+            await Promise.all(
+              sessions.map(async (m) => {
+                try {
+                  const s = await repo.open(m);
+                  previews[m.path] = await loadSessionPreview(s);
+                } catch {
+                  previews[m.path] = "";
+                }
+              })
+            );
             setMode({
               type: "session",
               sessions,
+              previews,
               selectedIndex: 0,
             });
           } catch (err: any) {
@@ -465,6 +516,13 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     ? SLASH_COMMANDS.filter((c) => c.startsWith(input))
     : [];
 
+  // Scroll info text for status bar
+  const scrollInfo = useMemo(() => {
+    if (messages.length === 0) return undefined;
+    if (scrollOffset === 0) return undefined;
+    return `▲ scrolled`;
+  }, [messages.length, scrollOffset]);
+
   return (
     <Box flexDirection="column" height={rows}>
       {/* Main content area */}
@@ -475,7 +533,11 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
           justifyContent="flex-end"
           overflow="hidden"
         >
-          <MessageList messages={messages} />
+          <MessageList
+            messages={messages}
+            scrollOffset={scrollOffset}
+            visibleHeight={visibleHeight}
+          />
           {mode.type === "ask" && (
             <AskPicker
               question={mode.question}
@@ -625,6 +687,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
         >
           <SessionPicker
             sessions={mode.sessions}
+            previews={mode.previews}
             selectedIndex={mode.selectedIndex}
             currentPath={sessionPath}
             onSelect={async (session) => {
@@ -634,6 +697,11 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 await runtime.setSession(opened);
                 const meta = await opened.getMetadata();
                 setSessionPath(meta.path);
+                // Load history messages
+                const entries = await opened.getEntries();
+                const history = sessionEntriesToMessages(entries);
+                setMessages(history);
+                setScrollOffset(0);
                 setMessages((prev) => [
                   ...prev,
                   {
@@ -707,6 +775,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
         runtime={runtime}
         sessionPath={sessionPath}
         isProcessing={isProcessing}
+        scrollInfo={scrollInfo}
       />
     </Box>
   );

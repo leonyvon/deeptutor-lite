@@ -32,6 +32,7 @@ export type AppMode =
   | {
       type: "session";
       sessions: JsonlSessionMetadata[];
+      previews: Record<string, string>;
       selectedIndex: number;
     }
   | { type: "help" }

@@ -6,12 +6,14 @@ interface StatusBarProps {
   runtime: DeeptutorRuntime;
   sessionPath: string;
   isProcessing: boolean;
+  scrollInfo?: string;
 }
 
 export function StatusBar({
   runtime,
   sessionPath,
   isProcessing,
+  scrollInfo,
 }: StatusBarProps): React.ReactElement {
   const model = runtime.currentModel();
   const kb = runtime.config.kb.defaultKB;
@@ -32,6 +34,7 @@ export function StatusBar({
         <Text dimColor>| KB: {kb}</Text>
       </Box>
       <Box flexDirection="row" gap={1}>
+        {scrollInfo && <Text dimColor>{scrollInfo}</Text>}
         <Text dimColor>{sessionPath}</Text>
         <Text color="gray">Ctrl+C exit</Text>
       </Box>
