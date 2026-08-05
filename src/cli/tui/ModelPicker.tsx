@@ -46,6 +46,22 @@ export function ModelPicker({
     return [...builtIn, { id: OPENAI_COMPAT_ID, name: "OpenAI Compatible" }];
   }, [runtime]);
 
+  // ---- Filtered providers (search on provider step) ----
+  const filteredProviders = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return providers;
+    return providers.filter((p) =>
+      `${p.id} ${p.name}`.toLowerCase().includes(q)
+    );
+  }, [providers, searchQuery]);
+
+  // Clamp selectedIndex when filter shrinks
+  useEffect(() => {
+    if (step === "provider" && selectedIndex >= filteredProviders.length) {
+      onChangeIndex(Math.max(0, filteredProviders.length - 1));
+    }
+  }, [step, selectedIndex, filteredProviders.length, onChangeIndex]);
+
   // ---- Async auth state cache ----
   const [authState, setAuthState] = useState<
     Record<string, { needsKey: boolean; configured: boolean; source: string } | undefined>
@@ -88,6 +104,17 @@ export function ModelPicker({
     );
   }, [allChoices, searchQuery]);
 
+  // ---- Windowed list for provider step ----
+  const providerWindowStart = useMemo(() => {
+    if (filteredProviders.length <= WINDOW_SIZE) return 0;
+    return Math.max(0, Math.min(selectedIndex, filteredProviders.length - WINDOW_SIZE));
+  }, [filteredProviders.length, selectedIndex]);
+
+  const visibleProviders = useMemo(
+    () => filteredProviders.slice(providerWindowStart, providerWindowStart + WINDOW_SIZE),
+    [filteredProviders, providerWindowStart]
+  );
+
   // ---- Windowed list for model step ----
   const windowStart = useMemo(() => {
     if (filteredChoices.length <= WINDOW_SIZE) return 0;
@@ -99,17 +126,6 @@ export function ModelPicker({
     [filteredChoices, windowStart]
   );
 
-  // ---- Windowed list for provider step (same pattern) ----
-  const providerWindowStart = useMemo(() => {
-    if (providers.length <= WINDOW_SIZE) return 0;
-    return Math.max(0, Math.min(selectedIndex, providers.length - WINDOW_SIZE));
-  }, [providers.length, selectedIndex]);
-
-  const visibleProviders = useMemo(
-    () => providers.slice(providerWindowStart, providerWindowStart + WINDOW_SIZE),
-    [providers, providerWindowStart]
-  );
-
   // ---- Keyboard handling ----
   useInput(
     (input, key) => {
@@ -119,12 +135,13 @@ export function ModelPicker({
       } else if (key.downArrow) {
         const max =
           step === "provider"
-            ? providers.length - 1
+            ? filteredProviders.length - 1
             : filteredChoices.length - 1;
         onChangeIndex(Math.min(max, selectedIndex + 1));
       } else if (key.return) {
         if (step === "provider") {
-          const pid = providers[selectedIndex].id;
+          const pid = filteredProviders[selectedIndex]?.id;
+          if (!pid) return;
           const auth = authState[pid];
           if (auth && auth.needsKey && !auth.configured) {
             onChangeStep("apikey", pid);
@@ -138,7 +155,10 @@ export function ModelPicker({
           if (choice) onSelect({ providerId: choice.providerId, modelId: choice.modelId });
         }
       } else if (key.escape) {
-        if (step === "model" && searchQuery.trim()) {
+        if (step === "provider" && searchQuery.trim()) {
+          onChangeSearchQuery("");
+          onChangeIndex(0);
+        } else if (step === "model" && searchQuery.trim()) {
           onChangeSearchQuery("");
           onChangeIndex(0);
         } else if (step === "model") {
@@ -187,28 +207,49 @@ export function ModelPicker({
               }`}
       </Text>
       <Box flexDirection="column" marginTop={1}>
-        {/* ---- Provider list (windowed) ---- */}
-        {step === "provider" &&
-          visibleProviders.map((p, i) => {
-            const globalIdx = providerWindowStart + i;
-            const a = authState[p.id];
-            const authLabel =
-              a && a.needsKey ? (a.configured ? " ✓" : " (needs key)") : "";
-            return (
-              <Box key={p.id}>
-                <Text color={globalIdx === selectedIndex ? "cyan" : undefined}>
-                  {globalIdx === selectedIndex ? "> " : "  "}
-                  {p.name}
-                  <Text dimColor>{authLabel}</Text>
+        {/* ---- Provider list with search ---- */}
+        {step === "provider" && (
+          <Box flexDirection="column">
+            {/* Search box */}
+            <Box marginBottom={1}>
+              <Text dimColor>Search: </Text>
+              <TextInput
+                value={searchQuery}
+                onChange={onChangeSearchQuery}
+                onSubmit={() => {}}
+                placeholder="filter providers..."
+                focus={true}
+              />
+            </Box>
+            {/* Filtered list */}
+            {visibleProviders.map((p, i) => {
+              const globalIdx = providerWindowStart + i;
+              const a = authState[p.id];
+              const authLabel =
+                a && a.needsKey ? (a.configured ? " ✓" : " (needs key)") : "";
+              return (
+                <Box key={p.id}>
+                  <Text color={globalIdx === selectedIndex ? "cyan" : undefined}>
+                    {globalIdx === selectedIndex ? "> " : "  "}
+                    {p.name}
+                    <Text dimColor>{authLabel}</Text>
+                  </Text>
+                </Box>
+              );
+            })}
+            {/* Count indicator */}
+            {filteredProviders.length > 0 && (
+              <Box marginTop={1}>
+                <Text dimColor>
+                  (showing {visibleProviders.length} of {filteredProviders.length})
                 </Text>
               </Box>
-            );
-          })}
-        {step === "provider" && providers.length > WINDOW_SIZE && (
-          <Box marginTop={1}>
-            <Text dimColor>
-              (showing {visibleProviders.length} of {providers.length})
-            </Text>
+            )}
+            {filteredProviders.length === 0 && (
+              <Box marginTop={1}>
+                <Text dimColor>(no matches)</Text>
+              </Box>
+            )}
           </Box>
         )}
 
@@ -287,9 +328,7 @@ export function ModelPicker({
         <Text dimColor>
           {step === "apikey"
             ? "enter submit · esc cancel"
-            : step === "model"
-              ? "↑↓ navigate · enter select · esc back/clear"
-              : "↑↓ navigate · enter select · esc cancel"}
+            : "↑↓ navigate · enter select · esc back/clear"}
         </Text>
       </Box>
     </Box>

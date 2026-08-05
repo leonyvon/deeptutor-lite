@@ -357,10 +357,15 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             );
             let text = "Sessions:\n";
             for (const s of sessions) {
-              const name = basename(s.path);
-              const preview = previews[s.path] ? ` — ${previews[s.path].slice(0, 40)}` : "";
+              const rawPreview = previews[s.path];
+              const hasPreview = rawPreview && rawPreview.trim().length > 0;
+              const preview = hasPreview ? rawPreview : "（空会话）";
+              const mainText = preview.length > 36 ? preview.slice(0, 36) + "…" : preview;
+              const base = basename(s.path);
+              const timeMatch = base.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})/);
+              const time = timeMatch ? `${timeMatch[2]}-${timeMatch[3]} ${timeMatch[4]}:${timeMatch[5]}` : "";
               const mark = s.path === sessionPath ? "▶ " : "  ";
-              text += `${mark}${name}${preview}\n`;
+              text += `${mark}${mainText}${time ? " " + time : ""}\n`;
             }
             setMessages((prev) => [
               ...prev,
@@ -603,7 +608,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             onChangeStep={(step, providerId) =>
               setMode((prev) =>
                 prev.type === "model"
-                  ? { ...prev, step, providerId, searchQuery: step === "model" ? "" : prev.searchQuery }
+                  ? { ...prev, step, providerId, searchQuery: step === "provider" || step === "model" ? "" : prev.searchQuery }
                   : prev
               )
             }
