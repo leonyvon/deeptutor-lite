@@ -9,13 +9,57 @@ interface MessageListProps {
   visibleHeight: number;
 }
 
+/** True for East Asian wide/fullwidth/emoji code points (2 terminal columns). */
+function isWideCodePoint(cp: number): boolean {
+  return (
+    (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+    (cp >= 0x2e80 && cp <= 0xa4cf) || // CJK radicals, kana, CJK ideographs, Yi
+    (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul syllables
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK compatibility ideographs
+    (cp >= 0xfe30 && cp <= 0xfe4f) || // CJK compatibility forms
+    (cp >= 0xff00 && cp <= 0xff60) || // fullwidth forms
+    (cp >= 0xffe0 && cp <= 0xffe6) || // fullwidth signs
+    (cp >= 0x1f300 && cp <= 0x1faff) || // emoji & pictographs
+    (cp >= 0x20000 && cp <= 0x3fffd) // CJK extension B–G
+  );
+}
+
+/**
+ * Terminal display width of a string: ASCII/Latin = 1 column, CJK
+ * wide/fullwidth/emoji = 2 columns. Deliberately overestimates rare and
+ * ambiguous wide-ish ranges (better to reserve one extra row than to
+ * truncate content at the bottom of the view).
+ */
+export function displayWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    if (cp < 0x20 || cp === 0x7f) continue; // control chars render 0 columns
+    w += isWideCodePoint(cp) ? 2 : 1;
+  }
+  return w;
+}
+
+/**
+ * Number of terminal rows `text` occupies when wrapped at `width` columns.
+ * Splits on newlines; every segment is at least one row. Empty string = 1 row.
+ */
+export function countDisplayLines(text: string, width: number): number {
+  if (!text) return 1;
+  let lines = 0;
+  for (const seg of text.split("\n")) {
+    lines += Math.max(1, Math.ceil(displayWidth(seg) / width));
+  }
+  return lines;
+}
+
 export function estimateMessageHeight(msg: UIMessage, termWidth: number): number {
   const width = Math.max(termWidth - 8, 20);
   let lines = 0;
   if (msg.type === "user") {
-    lines = 1 + Math.ceil(msg.text.length / width);
+    lines = 1 + countDisplayLines(msg.text, width);
   } else if (msg.type === "assistant") {
-    lines = 1 + Math.ceil(msg.text.length / width) + (msg.streaming ? 1 : 0);
+    lines = 1 + countDisplayLines(msg.text, width) + (msg.streaming ? 1 : 0);
   } else if (msg.type === "tool") {
     lines = 2;
   }

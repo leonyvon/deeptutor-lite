@@ -16,7 +16,7 @@ import { basename } from "node:path";
 import type { DeeptutorRuntime } from "../../agent/harness.js";
 import type { JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import type { UIMessage, AppMode } from "./types.js";
-import { MessageList, estimateMessageHeight } from "./MessageList.js";
+import { MessageList, estimateMessageHeight, countDisplayLines } from "./MessageList.js";
 import { CommandMenu } from "./CommandMenu.js";
 import { TextInput } from "./TextInput.js";
 import { StatusBar } from "./StatusBar.js";
@@ -54,6 +54,12 @@ const SLASH_COMMANDS = Object.keys(COMMAND_DESCRIPTIONS);
 // (before the first streaming text_delta arrives).
 const THINKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+// Input box grows with the wrapped input lines, but never beyond this height
+// (prevents a very long paste from occupying the whole screen).
+const MAX_INPUT_LINES = 8;
+
+const PLACEHOLDER_TEXT = "Ask about your knowledge base… (/help)";
+
 export interface AppProps {
   runtime: DeeptutorRuntime;
   repo?: JsonlSessionRepo;
@@ -76,16 +82,26 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   const modeRef = useRef(mode.type);
   modeRef.current = mode.type;
 
-  const visibleHeight = Math.max(rows - 4, 5); // rows - input(3) - status(1)
+  const termWidth = process.stdout.columns ?? 80;
+
+  // Input box height grows with the wrapped input (1 top border + content
+  // lines + 1 bottom row). Width available to TextInput = term width - "> "
+  // prefix (2) - paddingX 1×2 (2).
+  const inputLines = Math.max(
+    1,
+    countDisplayLines(input || PLACEHOLDER_TEXT, Math.max(termWidth - 4, 10))
+  );
+  const inputAreaHeight = Math.min(MAX_INPUT_LINES, 2 + inputLines);
+
+  const visibleHeight = Math.max(rows - inputAreaHeight - 1, 5); // rows - input area - status(1)
 
   // Total estimated scrollable height and the clamp ceiling for scrollOffset
   const totalHeight = useMemo(() => {
-    const termWidth = process.stdout.columns ?? 80;
     return messages.reduce(
       (acc, m) => acc + estimateMessageHeight(m, termWidth),
       0
     );
-  }, [messages]);
+  }, [messages, termWidth]);
 
   const maxScroll = Math.max(0, totalHeight - visibleHeight);
 
@@ -947,7 +963,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
           )}
           <Box
             flexDirection="column"
-            height={3}
+            height={inputAreaHeight}
             flexShrink={0}
             borderStyle="single"
             borderTop
@@ -969,7 +985,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                   setMenuVisible(clean.startsWith("/"));
                 }}
                 onSubmit={handleSubmit}
-                placeholder="Ask about your knowledge base… (/help)"
+                placeholder={PLACEHOLDER_TEXT}
                 focus={!isProcessing}
               />
             </Box>
