@@ -37,7 +37,7 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   "/brave": "Configure Brave search",
   "/new": "New session",
   "/list": "List sessions",
-  "/switch": "Switch session",
+  "/continue": "Continue session",
   "/quiz": "Generate a quiz",
   "/research": "Run research agent",
   "/solve": "Solve step by step",
@@ -448,7 +448,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   /brave             Configure Brave search
   /new               New session
   /list              List sessions
-  /switch            Switch session
+  /continue          Continue session
   /help              Show help
   /quit              Exit`;
           setMessages((prev) => [
@@ -493,15 +493,6 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             setSessionPath(meta.path);
             setMessages([]);
             setScrollOffset(0);
-            setMessages((prev) => [
-              ...prev,
-              {
-                type: "assistant",
-                text: `New session started: ${meta.path}`,
-                streaming: false,
-                id: nextId(),
-              },
-            ]);
           } catch (err: any) {
             setMessages((prev) => [
               ...prev,
@@ -590,7 +581,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
           return;
         }
 
-        if (cmd === "/switch") {
+        if (cmd === "/continue" || cmd === "/switch") {
           if (!repo) {
             setMessages((prev) => [
               ...prev,
@@ -921,15 +912,6 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 const history = sessionEntriesToMessages(entries);
                 setMessages(history);
                 setScrollOffset(0);
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    type: "assistant",
-                    text: `Switched to ${meta.path}`,
-                    streaming: false,
-                    id: nextId(),
-                  },
-                ]);
               } catch (err: any) {
                 setMessages((prev) => [
                   ...prev,
