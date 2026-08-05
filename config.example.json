@@ -6,11 +6,20 @@
     "maxResults": 5
   },
   "kb": {
-    "rootDir": "~/deeptutor-kbs",
+    "rootDir": "~/.deeptutor/kbs",
+    "indexDir": "~/.deeptutor/knowledge",
     "defaultKB": "default"
   },
   "python": {
     "timeout": 30,
     "maxTimeout": 300
+  },
+  "model": {
+    "baseUrl": "http://127.0.0.1:11434/v1",
+    "model": "qwen3:8b",
+    "embeddingModel": "nomic-embed-text"
+  },
+  "session": {
+    "dir": "~/.deeptutor/sessions"
   }
 }

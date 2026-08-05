@@ -1,110 +1,120 @@
-# deeptutor-lite
+# deeptutor
 
-A lightweight document tutoring system built on [pi agent](https://pi.dev), preserving the core design patterns from [deeptutor](https://github.com/HKUDS/DeepTutor) while eliminating heavy dependencies.
+A lightweight document tutoring CLI — RAG Q&A over your knowledge bases, web search, code execution, and a mastery learning path with deterministic grading. Standalone application (no `pi coding agent` required), built on `pi-agent-core` + `pi-ai`.
 
-## Features (11/11 deeptutor features preserved)
+## Features
 
-| Feature | Status | Implementation |
-|---------|--------|---------------|
-| Document RAG Q&A | ✅ | pi-knowledge (BM25 + vector hybrid) |
-| Web Search | ✅ | Brave API + proxy (127.0.0.1:7897) |
-| Multi-step Reasoning | ✅ | pi native agentic loop |
-| Code Execution | ✅ | python_run tool |
-| Multi-session Memory | ✅ | pi native session management |
-| Multi-KB Management | ✅ | kb_switch / kb_list / kb_create |
-| Quiz Generator | ✅ | quiz.md skill |
-| Research Agent | ✅ | research.md skill |
-| Data Visualization | ✅ | visualize.md + python_run |
-| Problem Solver | ✅ | solve.md skill |
-| Mastery Learning Path | ✅ | mastery_generate / mastery_update |
+| Feature | Implementation |
+|---------|----------------|
+| Document RAG Q&A | BM25 + vector hybrid search (vendored from pi-knowledge) |
+| Web Search | Brave API + optional proxy |
+| Multi-step Reasoning | AgentHarness agentic loop (pi-agent-core) |
+| Code Execution | `python_run` tool |
+| Multi-session Memory | JSONL sessions (same mechanism as pi) |
+| Multi-KB Management | kb_switch / kb_list / kb_create |
+| Quiz Generator | `/quiz` workflow skill |
+| Research Agent | `/research` workflow skill |
+| Data Visualization | `/visualize` + python_run |
+| Problem Solver | `/solve` workflow skill |
+| Mastery Learning Path | mastery_generate / quiz / grade / status (deterministic + semantic grading) |
 
 ## Quick Start
 
 ### Prerequisites
-- **Node.js >= 20**
+- **Node.js >= 22**
 - **Python >= 3.10** (for python_run and visualization)
-- **git**
+- **An OpenAI-compatible LLM endpoint** (e.g. [Ollama](https://ollama.com)) serving:
+  - a chat model (e.g. `qwen2.5-coder:14b`)
+  - an embedding model (e.g. `nomic-embed-text`)
 
 ### Install
 
 ```bash
-# 1. Install pi agent
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+# From this repo
+npm install --legacy-peer-deps
+npm run build
+npm link          # exposes the `deeptutor` command
 
-# 2. Install pi-knowledge extension
-git clone https://github.com/nczz/pi-knowledge.git ~/.pi/agent/extensions/pi-knowledge
-cd ~/.pi/agent/extensions/pi-knowledge && npm install --legacy-peer-deps
-
-# 3. Clone this package and link it into pi
-git clone <your-repo-url> deeptutor-lite
-cd deeptutor-lite
-./install.ps1          # junctions extension/skills/prompts into ~/.pi/agent
-
-# 4. Create KB directory
-mkdir -p ~/deeptutor-kbs/default
-
-# 5. Set Brave API key (Windows)
-set BRAVE_API_KEY=your-brave-api-key
-
-# 6. Ensure proxy is running
-# Default: http://127.0.0.1:7897
-# Change in deeptutor-lite/extensions/config.json
+# Or global install from npm (when published)
+npm install -g --legacy-peer-deps deeptutor
 ```
 
-> **Dev loop**: `install.ps1` creates junctions, so edits in the repo take effect immediately — no reinstall needed. Re-run `install.ps1 -Uninstall` to unlink (repo files stay untouched).
->
-> **Distribution**: the repo is a standard pi-package (`keywords: ["pi-package"]` + `pi` manifest). Publish to GitHub/npm and install anywhere with `pi install git:...` or `pi install npm:...`.
+### Configure
+
+Copy `config.example.json` to `config.json` (or `~/.deeptutor/config.json` — the home one overrides) and adjust:
+
+```jsonc
+{
+  "search": { "apiKey": "${BRAVE_API_KEY}", "proxy": "http://127.0.0.1:7897" },
+  "model": { "baseUrl": "http://127.0.0.1:11434/v1", "model": "qwen2.5-coder:14b", "embeddingModel": "nomic-embed-text" }
+}
+```
+
+Data lives under `~/.deeptutor/` (override with `DEEPTUTOR_HOME`):
+- `kbs/<name>/` — knowledge base documents
+- `knowledge/` — RAG index (SQLite + vectors)
+- `sessions/` — JSONL session files
 
 ### First Run
 
 ```bash
-# Index a document
-pi -p "use knowledge_add to index ~/deeptutor-kbs/default/your-doc.md"
-
-# Ask a question
-pi "what does the document say about X?"
+mkdir -p ~/.deeptutor/kbs/default
+deeptutor
 ```
 
-## Available Tools
+Inside the REPL:
 
-| Tool | Description |
-|------|-------------|
-| `web_search` | Brave web search (via proxy) |
-| `kb_switch` | Switch active knowledge base |
-| `kb_list` | List all knowledge bases |
-| `kb_create` | Create new knowledge base |
-| `python_run` | Execute Python code |
-| `mastery_generate` | Generate learning path |
-| `mastery_update` | Update learning progress |
+```
+deeptutor — document tutoring. Type /help for commands.
+> Index a document: "use knowledge_add to index ~/.deeptutor/kbs/default/your-doc.md"
+> Ask a question:   "what does the document say about X?"
+> /mastery          start a structured learning path
+```
 
-## Skills (trigger with /skillname)
+## Commands
 
-| Skill | Trigger |
-|-------|---------|
-| quiz | /quiz or "generate a quiz" |
-| research | /research or "investigate" |
-| visualize | "draw a chart" or "plot" |
-| solve | /solve or "prove" |
-| mastery | /mastery or "learning path" |
+| Command | Description |
+|---------|-------------|
+| `/quiz <topic>` | Generate a quiz from the knowledge base |
+| `/research <topic>` | Run the research agent |
+| `/solve <problem>` | Solve a problem step by step |
+| `/visualize <data>` | Create a chart or plot |
+| `/mastery` | Start the mastery learning path |
+| `/new` | Start a new session |
+| `/list` / `/switch` | List / switch sessions |
+| `/help` / `/quit` | Help / exit |
 
-## Performance
+## Tools
 
-| Metric | deeptutor | deeptutor-lite |
-|--------|-----------|---------------|
-| Install size | ~1GB | ~50MB |
-| RAM baseline | 200MB+ | 50-150MB |
-| Cold start | 5-15s | < 1s |
-| Dependencies | llama-index, FAISS, FastAPI, Next.js | pi agent + pi-knowledge + undici |
-
-## Lessons Learned
-
-开发难点与经验（pi 扩展、pi-knowledge 集成、mastery 设计、agent 交互调试、pi-package 打包）：见 [docs/lessons-learned.md](docs/lessons-learned.md)
+web_search, knowledge_add/search/list/remove/update, kb_switch/list/create, python_run, mastery_generate/quiz/grade/update/status/assess/build/diagnostic.
 
 ## Architecture
 
 ```
-pi agent (TUI/CLI)
-├── pi-knowledge (RAG: ingest, embed, hybrid search)
-├── deeptutor-lite extension (7 custom tools)
-└── deeptutor skills (6 SKILL.md workflow documents)
+deeptutor CLI (clack REPL)
+├── AgentHarness (pi-agent-core)   — agentic loop, sessions, compaction
+├── pi-ai                          — OpenAI-compatible LLM provider
+├── src/tools/                     — 25+ tools (web_search, kb_*, knowledge_*, python_run, mastery_*)
+├── src/rag/                       — vendored pi-knowledge engine (BM25 FTS5 + vector)
+├── skills/ prompts/               — 6 SKILL.md workflows + 5 prompt templates
+└── src/session/                   — JSONL session repository
 ```
+
+## Performance
+
+| Metric | deeptutor |
+|--------|-----------|
+| Install size | ~50MB + Python |
+| RAM baseline | 50-150MB |
+| Cold start | < 1s |
+| Dependencies | pi-agent-core, pi-ai, clack, better-sqlite3, undici |
+
+## Development
+
+```bash
+npm run dev      # run from source (node --experimental-strip-types)
+npm run build    # compile to dist/
+npm test         # unit tests
+```
+
+Lessons learned (pi extension development, RAG integration, agent interaction debugging): see [docs/lessons-learned.md](docs/lessons-learned.md) and [docs/superpowers/specs/2026-08-05-deeptutor-standalone-app-design.md](docs/superpowers/specs/2026-08-05-deeptutor-standalone-app-design.md).

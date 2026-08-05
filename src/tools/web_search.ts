@@ -1,15 +1,23 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@sinclair/typebox";
+import type { TSchema } from "@sinclair/typebox";
 import { ProxyAgent, fetch } from "undici";
+import type { ToolContext, Config } from "../types.ts";
 
-interface SearchConfig {
-  apiKey: string;
-  proxy?: string;
-  maxResults: number;
+/**
+ * Generic identity wrapper so the tool's `execute` `params` is inferred from
+ * its `parameters` schema (mirrors the generic registerTool of the old pi
+ * extension). Keeps the exported factory return type as
+ * `AgentHarnessTool<ToolContext>`.
+ */
+function tool<TParams extends TSchema, TDetails = unknown>(
+  t: AgentHarnessTool<ToolContext, TParams, TDetails>
+): AgentHarnessTool<ToolContext, TParams, TDetails> {
+  return t;
 }
 
-export function registerBraveSearch(pi: ExtensionAPI, config: SearchConfig) {
-  pi.registerTool({
+export function createWebSearchTool(cfg: Config["search"]): AgentHarnessTool<ToolContext> {
+  return tool({
     name: "web_search",
     label: "Web Search (Brave)",
     description:
@@ -20,20 +28,20 @@ export function registerBraveSearch(pi: ExtensionAPI, config: SearchConfig) {
       }),
       max_results: Type.Optional(
         Type.Number({
-          default: config.maxResults,
+          default: cfg.maxResults,
           description: "Maximum number of results to return (1-10)",
         })
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const maxResults = Math.max(1, Math.min(params.max_results ?? config.maxResults, 10));
+      const maxResults = Math.max(1, Math.min(params.max_results ?? cfg.maxResults, 10));
 
       const url = new URL("https://api.search.brave.com/res/v1/web/search");
       url.searchParams.set("q", params.query);
       url.searchParams.set("count", String(maxResults));
 
-      const dispatcher = config.proxy
-        ? new ProxyAgent(config.proxy)
+      const dispatcher = cfg.proxy
+        ? new ProxyAgent(cfg.proxy)
         : undefined;
 
       const fetchOptions: Record<string, unknown> = {
@@ -41,7 +49,7 @@ export function registerBraveSearch(pi: ExtensionAPI, config: SearchConfig) {
         headers: {
           Accept: "application/json",
           "Accept-Encoding": "gzip",
-          "X-Subscription-Token": config.apiKey,
+          "X-Subscription-Token": cfg.apiKey,
         },
       };
 

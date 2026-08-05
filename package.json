@@ -1,50 +1,50 @@
 {
-  "name": "deeptutor-lite",
-  "version": "0.1.0",
-  "description": "Lightweight deeptutor for pi: RAG Q&A (pi-knowledge), Brave web search, multi-KB management, Python runner, quiz/research/solve/visualize workflows, and a full mastery learning path with deterministic + semantic grading",
+  "name": "deeptutor",
+  "version": "0.2.0",
+  "description": "Lightweight document tutoring CLI: RAG Q&A, web search, quizzes, mastery learning path — standalone, no pi coding agent required",
   "type": "module",
-  "keywords": [
-    "pi-package",
-    "pi",
-    "pi-coding-agent",
-    "deeptutor",
-    "tutor",
-    "learning",
-    "mastery",
-    "quiz",
-    "spaced-repetition",
-    "rag",
-    "knowledge-base"
-  ],
-  "license": "MIT",
-  "author": "LEON",
-  "pi": {
-    "extensions": [
-      "./extensions"
-    ],
-    "skills": [
-      "./skills"
-    ],
-    "prompts": [
-      "./prompts"
-    ]
+  "bin": {
+    "deeptutor": "dist/index.js"
   },
   "files": [
-    "extensions",
+    "dist",
     "skills",
     "prompts",
     "config.example.json",
     "README.md"
   ],
-  "dependencies": {
-    "undici": "^6.0.0"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "@sinclair/typebox": "*"
+  "scripts": {
+    "build": "tsc",
+    "dev": "node --experimental-strip-types src/index.ts",
+    "test": "vitest run"
   },
   "engines": {
     "node": ">=22.0.0"
-  }
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.10.1",
+    "@earendil-works/pi-agent-core": "^0.83.0",
+    "@earendil-works/pi-ai": "^0.83.0",
+    "@huggingface/transformers": "^3.8.1",
+    "@sinclair/typebox": "^0.34.27",
+    "better-sqlite3": "^12.11.1",
+    "chalk": "^5.6.0",
+    "ignore": "^7.0.5",
+    "mammoth": "^1.9.0",
+    "tree-sitter": "^0.22.4",
+    "tree-sitter-go": "^0.23.4",
+    "tree-sitter-java": "^0.23.5",
+    "tree-sitter-python": "^0.23.6",
+    "tree-sitter-rust": "^0.23.2",
+    "tree-sitter-typescript": "^0.23.2",
+    "undici": "^8.5.0",
+    "unpdf": "^1.6.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "license": "MIT"
 }

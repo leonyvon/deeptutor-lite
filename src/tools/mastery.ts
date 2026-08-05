@@ -1,15 +1,12 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@sinclair/typebox";
+import type { TSchema } from "@sinclair/typebox";
 import { readFile, writeFile, access, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { ToolContext, Config } from "../types.ts";
 
 // ── Types ──
-
-interface KBConfig {
-  rootDir: string;
-  defaultKB: string;
-}
 
 type KnowledgeType = "memory" | "procedure" | "concept" | "design";
 type QuestionType = "choice" | "short" | "open";
@@ -548,10 +545,23 @@ function nameToId(name: string): string {
 // REGISTER TOOLS
 // ══════════════════════════════════════════════════════════════════════
 
-export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
+/**
+ * Generic identity wrapper so each tool's `execute` `params` is inferred from
+ * its `parameters` schema (mirrors the generic registerTool of the old pi
+ * extension). Keeps the exported factory return type as
+ * `AgentHarnessTool<ToolContext>`.
+ */
+function tool<TParams extends TSchema, TDetails = unknown>(
+  t: AgentHarnessTool<ToolContext, TParams, TDetails>
+): AgentHarnessTool<ToolContext, TParams, TDetails> {
+  return t;
+}
+
+export function createMasteryTools(cfg: Config["kb"]): AgentHarnessTool<ToolContext>[] {
+  return [
 
   // ═══ mastery_generate (existing, updated for new fields) ═══
-  pi.registerTool({
+  tool({
     name: "mastery_generate",
     label: "Generate Learning Path",
     description:
@@ -575,7 +585,7 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const kbPath = join(config.rootDir, params.kb_name);
+      const kbPath = join(cfg.rootDir, params.kb_name);
       try {
         await access(kbPath);
       } catch {
@@ -633,10 +643,10 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
         details: { success: true, topicCount: topics.length },
       };
     },
-  });
+  }),
 
   // ═══ mastery_quiz (existing, minor update to set stage) ═══
-  pi.registerTool({
+  tool({
     name: "mastery_quiz",
     label: "Quiz a Topic (Mastery Path)",
     description:
@@ -659,7 +669,7 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const kbPath = join(config.rootDir, params.kb_name);
+      const kbPath = join(cfg.rootDir, params.kb_name);
       const data = await readMastery(kbPath);
 
       if (!data) {
@@ -709,51 +719,13 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
       topic.status = "in_progress";
       await writeMastery(kbPath, data);
 
-      // ── Interactive choice presentation via TUI ──
+      // ── Interactive choice presentation via ctx.ask ──
       const isChoice = params.question_type === "choice";
       const hasOpts = params.options && Object.keys(params.options).length > 0;
 
-      if ((ctx as any).hasUI && isChoice && hasOpts) {
-        const entries = Object.entries(params.options!);
-        const question = params.question;
-
+      if (isChoice && hasOpts && ctx.ask) {
         try {
-          const result = await (ctx as any).ui.custom<string | null>((tui: any, theme: any, _kb: any, done: (v: string | null) => void) => {
-            let sel = 0;
-            const acc = (s: string) => theme.fg("accent", s);
-            const dim = (s: string) => theme.fg("dim", s);
-
-            const render = (width: number): string[] => {
-              const w = Math.max(30, width - 6);
-              const lines: string[] = [];
-              lines.push(acc(`╭─ Quiz ${"─".repeat(Math.max(0, w - 8))}╮`));
-              for (const chunk of wrapLines(question, w - 2)) {
-                lines.push(`${acc("│")} ${theme.bold(chunk).padEnd(w - 2)} ${acc("│")}`);
-              }
-              lines.push(`${acc("│")}${"─".repeat(w)}${acc("│")}`);
-              for (let i = 0; i < entries.length; i++) {
-                const prefix = i === sel ? acc("→") : " ";
-                const optText = `${prefix} ${entries[i][0]}) ${entries[i][1]}`;
-                for (const chunk of wrapLines(optText, w - 2)) {
-                  lines.push(`${acc("│")} ${(i === sel ? acc(chunk) : chunk).padEnd(w - 2)} ${acc("│")}`);
-                }
-              }
-              lines.push(`${acc("│")}${"─".repeat(w)}${acc("│")}`);
-              lines.push(`${acc("│")} ${dim("↑↓ nav  enter select  esc cancel").padEnd(w - 2)} ${acc("│")}`);
-              lines.push(acc(`╰${"─".repeat(w)}╯`));
-              return lines;
-            };
-
-            const handleInput = (data: string) => {
-              if (data === "\x1b[A" || data === "\x1bOA") { sel = sel === 0 ? entries.length - 1 : sel - 1; return true; }
-              if (data === "\x1b[B" || data === "\x1bOB") { sel = sel === entries.length - 1 ? 0 : sel + 1; return true; }
-              if (data === "\r" || data === "\n") { done(`${entries[sel][0]}: ${entries[sel][1]}`); return true; }
-              if (data === "\x1b" || data === "\x03") { done(null); return true; }
-              return false;
-            };
-
-            return { render, invalidate: () => {}, handleInput };
-          }, { overlay: true });
+          const result = await ctx.ask(params.question, params.options!);
 
           if (result) {
             const userAnswer = (result.match(/^([A-Da-d])/) ?? [])[1]?.toUpperCase() ?? "A";
@@ -772,11 +744,11 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
             };
           }
         } catch {
-          // UI failed — fall through to text mode
+          // ask failed — fall through to text mode
         }
       }
 
-      // ── Fallback: text-based (no TUI, or non-choice question) ──
+      // ── Fallback: text-based (no ctx.ask, or non-choice question) ──
       const lines: string[] = [params.question];
       if (params.options && Object.keys(params.options).length > 0) {
         lines.push("");
@@ -800,10 +772,10 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
         },
       };
     },
-  });
+  }),
 
   // ═══ mastery_grade (updated: ErrorRecord, SRS, LearningStage) ═══
-  pi.registerTool({
+  tool({
     name: "mastery_grade",
     label: "Grade Quiz Answer (Mastery Path)",
     description:
@@ -814,7 +786,7 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
       answer: Type.String({ description: "The learner's answer, verbatim" }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const kbPath = join(config.rootDir, params.kb_name);
+      const kbPath = join(cfg.rootDir, params.kb_name);
       const data = await readMastery(kbPath);
 
       if (!data) {
@@ -1019,7 +991,7 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
               ? (mastered
                 ? `Correct! ${topic.topic} is now MASTERED (${Math.round(score * 100)}%). Moving on.`
                 : `Correct! But mastery is ${Math.round(score * 100)}% — gate requires ≥${MASTERY_THRESHOLD * 100}%. ${neededForGate > 0 ? `Need ${neededForGate} more correct answers (confidence cap prevents early mastery).` : ""}`)
-              : `Incorrect. Expected: "${topic.pendingQuestion?.expectedAnswer ?? "(unknown)"}". ${stageActions[topic.stage] ?? "Encourage the learner and try another question."}`,
+              : `Incorrect. Expected: "${(topic.pendingQuestion as PendingQuestion | null)?.expectedAnswer ?? "(unknown)"}". ${stageActions[topic.stage] ?? "Encourage the learner and try another question."}`,
           }, null, 2),
         }],
         details: {
@@ -1032,10 +1004,10 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
         },
       };
     },
-  });
+  }),
 
   // ═══ mastery_update (updated: supports stage and all new statuses) ═══
-  pi.registerTool({
+  tool({
     name: "mastery_update",
     label: "Update Topic Status (Manual)",
     description:
@@ -1051,7 +1023,7 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
       })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const kbPath = join(config.rootDir, params.kb_name);
+      const kbPath = join(cfg.rootDir, params.kb_name);
       const data = await readMastery(kbPath);
 
       if (!data) {
@@ -1131,13 +1103,12 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
         details: { success: true, nextTopic: next?.topic ?? null },
       };
     },
-  });
+  }),
 
   // ═══════════════════════════════════════════════════════════════
   // FEATURE 1 + 4: mastery_status
   // ═══════════════════════════════════════════════════════════════
-
-  pi.registerTool({
+  tool({
     name: "mastery_status",
     label: "Mastery Status & Next Action",
     description:
@@ -1147,7 +1118,7 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
       session_id: Type.Optional(Type.String({ description: "Optional session identifier for continuity" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const kbPath = join(config.rootDir, params.kb_name);
+      const kbPath = join(cfg.rootDir, params.kb_name);
       const data = await readMastery(kbPath);
 
       if (!data) {
@@ -1281,13 +1252,12 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
         details: { action: "complete" },
       };
     },
-  });
+  }),
 
   // ═══════════════════════════════════════════════════════════════
   // FEATURE 2: mastery_assess (Feynman check for concept/design)
   // ═══════════════════════════════════════════════════════════════
-
-  pi.registerTool({
+  tool({
     name: "mastery_assess",
     label: "Feynman Assessment (Concept/Design)",
     description:
@@ -1300,7 +1270,7 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
       evidence: Type.Optional(Type.String({ description: "The learner's explanation text (stored as feynmanExplanation)" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const kbPath = join(config.rootDir, params.kb_name);
+      const kbPath = join(cfg.rootDir, params.kb_name);
       const data = await readMastery(kbPath);
 
       if (!data) {
@@ -1385,13 +1355,12 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
         details: { success: true, passed: params.passed, nextTopic: next?.topic ?? null },
       };
     },
-  });
+  }),
 
   // ═══════════════════════════════════════════════════════════════
   // FEATURE 7: mastery_build
   // ═══════════════════════════════════════════════════════════════
-
-  pi.registerTool({
+  tool({
     name: "mastery_build",
     label: "Build Learning Path from KB Analysis",
     description:
@@ -1410,7 +1379,7 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
       mode: Type.Optional(Type.String({ description: "Either 'replace' (default) to overwrite, or 'append' to add to existing path" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const kbPath = join(config.rootDir, params.kb_name);
+      const kbPath = join(cfg.rootDir, params.kb_name);
       const mode = params.mode ?? "replace";
 
       // Validate KB exists
@@ -1521,7 +1490,7 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
         kbName: params.kb_name,
         mode,
         topicCount: data.path.length,
-        moduleCount: data.modules.length,
+        moduleCount: (data.modules ?? []).length,
         generatedAt: data.generatedAt,
         modules: params.modules.map((m) => ({
           name: m.name,
@@ -1537,16 +1506,15 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
 
       return {
         content: [{ type: "text", text: JSON.stringify(summary, null, 2) }],
-        details: { success: true, topicCount: data.path.length, moduleCount: data.modules.length },
+        details: { success: true, topicCount: data.path.length, moduleCount: (data.modules ?? []).length },
       };
     },
-  });
+  }),
 
   // ═══════════════════════════════════════════════════════════════
   // FEATURE 8: mastery_diagnostic
   // ═══════════════════════════════════════════════════════════════
-
-  pi.registerTool({
+  tool({
     name: "mastery_diagnostic",
     label: "Diagnostic Pre-Test",
     description:
@@ -1559,7 +1527,7 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
       })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const kbPath = join(config.rootDir, params.kb_name);
+      const kbPath = join(cfg.rootDir, params.kb_name);
       const data = await readMastery(kbPath);
 
       if (!data) {
@@ -1633,5 +1601,7 @@ export function registerMasteryTracker(pi: ExtensionAPI, config: KBConfig) {
         },
       };
     },
-  });
+  }),
+];
 }
+

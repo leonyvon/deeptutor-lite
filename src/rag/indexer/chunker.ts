@@ -1,0 +1,646 @@
+import { createHash } from "node:crypto";
+import { closeSync, type Dirent, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
+import { extname, join, relative, sep } from "node:path";
+import ignore from "ignore";
+import type { ChunkInsert } from "../storage/sqlite.js";
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+
+const DOCUMENT_EXTENSIONS: Record<string, true> = { ".doc": true, ".docx": true, ".pdf": true };
+
+const BINARY_EXTENSIONS: Record<string, true> = {
+	".7z": true,
+	".a": true,
+	".avi": true,
+	".bin": true,
+	".bmp": true,
+	".bz2": true,
+	".dat": true,
+	".db": true,
+	".dll": true,
+	".dylib": true,
+	".eot": true,
+	".exe": true,
+	".gif": true,
+	".gz": true,
+	".ico": true,
+	".jpg": true,
+	".jpeg": true,
+	".lib": true,
+	".lock": true,
+	".mov": true,
+	".mp3": true,
+	".mp4": true,
+	".node": true,
+	".o": true,
+	".otf": true,
+	".ppt": true,
+	".rar": true,
+	".so": true,
+	".sqlite": true,
+	".svg": true,
+	".tar": true,
+	".ttf": true,
+	".wasm": true,
+	".wav": true,
+	".webm": true,
+	".webp": true,
+	".woff": true,
+	".woff2": true,
+	".xls": true,
+	".xlsx": true,
+	".zip": true,
+};
+
+const DEFAULT_SUGGESTED_EXCLUDE = [
+	"node_modules",
+	".git",
+	"dist",
+	"build",
+	"bin",
+	"obj",
+	"out",
+	"target",
+	"coverage",
+	".next",
+	".cache",
+	".playwright",
+	".browser",
+	".browsers",
+	"__pycache__",
+	"*.app",
+	"*.asar",
+	"*.asar.unpacked",
+	"*.pak",
+	".env",
+	".env.*",
+	"*.pem",
+	"*.key",
+	"*.p12",
+	"*.pfx",
+	"*.crt",
+	"*.cert",
+	"*secret*",
+	"*secrets*",
+	"*credential*",
+	"*credentials*",
+	"docs/*eval-report*.md",
+	"docs/*evaluation-report*.md",
+	"docs/*knowledge-base*report*.md",
+	"*knowledge-base-evaluation-report*.md",
+	"*knowledge*.jsonl",
+	"*.min.js",
+	"*.min.css",
+	"*.map",
+	"*.lock",
+	"package-lock.json",
+	"playwright-report",
+	"test-results",
+	"browser-cache",
+	"ms-playwright",
+	".DS_Store",
+	"Thumbs.db",
+	"*.pyc",
+	"*.class",
+];
+
+export interface ScanOptions {
+	includeSuggestedText?: boolean;
+	includePaths?: string[];
+	excludePaths?: string[];
+}
+
+export interface ScannedFile {
+	path: string; // absolute path
+	relPath: string; // relative to root
+	content: string;
+	fileType: string;
+}
+
+export interface ScannableFile {
+	path: string; // absolute path
+	relPath: string; // relative to root
+	fileType: string;
+	size: number;
+}
+
+export interface SkippedScanEntry {
+	path: string;
+	reason: "suggested_excluded" | "oversized" | "binary" | "unreadable" | "inaccessible" | "extraction_failed";
+	size?: number;
+}
+
+export interface ScanResult {
+	files: ScannedFile[];
+	skipped: {
+		total: number;
+		by_reason: Record<SkippedScanEntry["reason"], number>;
+		samples: SkippedScanEntry[];
+	};
+}
+
+const MAX_SKIPPED_SAMPLES = 25;
+
+export function createSkippedScanStats(): ScanResult["skipped"] {
+	return {
+		total: 0,
+		by_reason: {
+			suggested_excluded: 0,
+			oversized: 0,
+			binary: 0,
+			unreadable: 0,
+			inaccessible: 0,
+			extraction_failed: 0,
+		},
+		samples: [],
+	};
+}
+
+function addSkipped(skipped: ScanResult["skipped"], entry: SkippedScanEntry): void {
+	skipped.total++;
+	skipped.by_reason[entry.reason]++;
+	if (skipped.samples.length < MAX_SKIPPED_SAMPLES) skipped.samples.push(entry);
+}
+
+export function addSkippedScanEntry(skipped: ScanResult["skipped"], entry: SkippedScanEntry): void {
+	addSkipped(skipped, entry);
+}
+
+export function summarizeSkippedScan(skipped: ScanResult["skipped"]): string {
+	return (
+		Object.entries(skipped.by_reason)
+			.filter(([, count]) => count > 0)
+			.map(([reason, count]) => `${reason}: ${count}`)
+			.join(", ") || "none"
+	);
+}
+
+function detectFileType(filePath: string): string {
+	const ext = extname(filePath).toLowerCase();
+	const map: Record<string, string> = {
+		".ts": "typescript",
+		".tsx": "typescript",
+		".js": "javascript",
+		".jsx": "javascript",
+		".mjs": "javascript",
+		".py": "python",
+		".go": "go",
+		".rs": "rust",
+		".java": "java",
+		".c": "c",
+		".cpp": "cpp",
+		".h": "c",
+		".hpp": "cpp",
+		".md": "markdown",
+		".mdx": "markdown",
+		".json": "json",
+		".yaml": "yaml",
+		".yml": "yaml",
+		".toml": "toml",
+		".html": "html",
+		".css": "css",
+		".scss": "css",
+		".sh": "shell",
+		".bash": "shell",
+		".zsh": "shell",
+		".sql": "sql",
+		".graphql": "graphql",
+		".pdf": "pdf",
+		".doc": "docx",
+		".docx": "docx",
+		".txt": "text",
+		".csv": "text",
+		".log": "text",
+	};
+	return map[ext] ?? "text";
+}
+
+export function isSupportedDocumentFile(filePath: string): boolean {
+	return DOCUMENT_EXTENSIONS[extname(filePath).toLowerCase()] === true;
+}
+
+function isBinaryFile(filePath: string): boolean {
+	if (isSupportedDocumentFile(filePath)) return false;
+	if (BINARY_EXTENSIONS[extname(filePath).toLowerCase()] === true) return true;
+	let fd: number | undefined;
+	try {
+		fd = openSync(filePath, "r");
+		const sample = Buffer.alloc(512);
+		const bytesRead = readSync(fd, sample, 0, sample.length, 0);
+		if (bytesRead === 0) return false;
+		return sample.subarray(0, bytesRead).includes(0x00);
+	} catch {
+		return true;
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
+}
+
+function buildIgnoreMatcher(dirPath: string): ReturnType<typeof ignore> {
+	const ig = ignore();
+	ig.add(DEFAULT_SUGGESTED_EXCLUDE);
+
+	const gitignorePath = join(dirPath, ".gitignore");
+	if (existsSync(gitignorePath)) {
+		ig.add(readFileSync(gitignorePath, "utf-8"));
+	}
+
+	return ig;
+}
+
+function normalizeScanPath(path: string): string {
+	return path.replaceAll("\\", "/").replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function normalizeScanPaths(paths: string[] | undefined): string[] {
+	return (paths ?? []).map(normalizeScanPath).filter(Boolean);
+}
+
+function pathMatches(relPath: string, patterns: string[]): boolean {
+	const normalized = normalizeScanPath(relPath);
+	return patterns.some((pattern) => normalized === pattern || normalized.startsWith(`${pattern}/`));
+}
+
+function directoryCouldContainIncludedPath(relPath: string, includePaths: string[]): boolean {
+	const normalized = normalizeScanPath(relPath);
+	return includePaths.some((includePath) => includePath.startsWith(`${normalized}/`));
+}
+
+export function* iterateScannableFiles(
+	dirPath: string,
+	skipped: ScanResult["skipped"] = createSkippedScanStats(),
+	options: ScanOptions = {},
+): Generator<ScannableFile> {
+	const ig = buildIgnoreMatcher(dirPath);
+	const includePaths = normalizeScanPaths(options.includePaths);
+	const excludePaths = normalizeScanPaths(options.excludePaths);
+	const includeSuggestedText = options.includeSuggestedText === true;
+
+	function* walk(dir: string): Generator<ScannableFile> {
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			addSkipped(skipped, { path: relative(dirPath, dir).split(sep).join("/") || ".", reason: "inaccessible" });
+			return;
+		}
+		for (const entry of entries) {
+			const fullPath = join(dir, entry.name);
+			const relPath = relative(dirPath, fullPath).split(sep).join("/");
+			const explicitlyIncluded = pathMatches(relPath, includePaths);
+
+			if (pathMatches(relPath, excludePaths)) {
+				addSkipped(skipped, { path: relPath, reason: "suggested_excluded" });
+				continue;
+			}
+
+			if (ig.ignores(relPath) && !includeSuggestedText && !explicitlyIncluded) {
+				if (entry.isDirectory() && directoryCouldContainIncludedPath(relPath, includePaths)) {
+					yield* walk(fullPath);
+					continue;
+				}
+				addSkipped(skipped, { path: relPath, reason: "suggested_excluded" });
+				continue;
+			}
+
+			if (entry.isDirectory()) {
+				if (ig.ignores(`${relPath}/`) && !includeSuggestedText && !explicitlyIncluded) {
+					if (directoryCouldContainIncludedPath(relPath, includePaths)) {
+						yield* walk(fullPath);
+						continue;
+					}
+					addSkipped(skipped, { path: `${relPath}/`, reason: "suggested_excluded" });
+					continue;
+				}
+				yield* walk(fullPath);
+			} else if (entry.isFile()) {
+				let size = 0;
+				try {
+					size = statSync(fullPath).size;
+				} catch {
+					addSkipped(skipped, { path: relPath, reason: "unreadable" });
+					continue;
+				}
+				if (size > MAX_FILE_SIZE) {
+					addSkipped(skipped, { path: relPath, reason: "oversized", size });
+					continue;
+				}
+				if (isBinaryFile(fullPath)) {
+					addSkipped(skipped, { path: relPath, reason: "binary", size });
+					continue;
+				}
+
+				yield { path: fullPath, relPath, fileType: detectFileType(fullPath), size };
+			}
+		}
+	}
+
+	yield* walk(dirPath);
+}
+
+export function* iterateScannedFiles(
+	dirPath: string,
+	skipped: ScanResult["skipped"] = createSkippedScanStats(),
+	options: ScanOptions = {},
+): Generator<ScannedFile> {
+	for (const file of iterateScannableFiles(dirPath, skipped, options)) {
+		try {
+			const content = readFileSync(file.path, "utf-8");
+			yield { ...file, content };
+		} catch {
+			addSkipped(skipped, { path: file.relPath, reason: "unreadable", size: file.size });
+		}
+	}
+}
+
+export async function iterateScannedFilesAsync(
+	dirPath: string,
+	onFile: (file: ScannedFile) => Promise<void> | void,
+	skipped: ScanResult["skipped"] = createSkippedScanStats(),
+	options: ScanOptions = {},
+): Promise<ScanResult["skipped"]> {
+	for (const file of iterateScannedFiles(dirPath, skipped, options)) {
+		await onFile(file);
+	}
+	return skipped;
+}
+
+export function walkDir(dirPath: string, options: ScanOptions = {}): ScannedFile[] {
+	return walkDirDetailed(dirPath, options).files;
+}
+
+export function walkDirDetailed(dirPath: string, options: ScanOptions = {}): ScanResult {
+	const results: ScannedFile[] = [];
+	const skipped = createSkippedScanStats();
+	for (const file of iterateScannedFiles(dirPath, skipped, options)) results.push(file);
+	return { files: results, skipped };
+}
+
+export function isReadableTextFile(filePath: string): boolean {
+	return !isBinaryFile(filePath);
+}
+
+// --- Chunking ---
+
+function estimateTokens(text: string): number {
+	return Math.ceil(text.length / 3);
+}
+
+const MARKDOWN_TARGET_TOKENS = 450;
+const TEXT_TARGET_TOKENS = 550;
+const MAX_TEXT_CHUNK_CHARS = 6_000;
+
+export function preTokenizeForFTS(content: string): string {
+	return content
+		.replace(/([a-z])([A-Z])/g, "$1 $2")
+		.replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+		.replace(/([a-zA-Z])(\d)/g, "$1 $2")
+		.replace(/(\d)([a-zA-Z])/g, "$1 $2")
+		.replace(/([\u4e00-\u9fff\u3400-\u4dbf])/g, " $1 ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+export function contentHash(content: string): string {
+	return createHash("sha256").update(content).digest("hex");
+}
+
+export function chunkIdentityHash(opts: {
+	content: string;
+	filePath: string;
+	fileType: string;
+	startLine: number;
+	endLine: number;
+	metadataJson: string;
+}): string {
+	return contentHash(
+		[opts.filePath, opts.fileType, String(opts.startLine), String(opts.endLine), opts.metadataJson, opts.content].join(
+			"\0",
+		),
+	);
+}
+
+function normalizeHeading(heading: string): string {
+	return heading.replace(/^#{1,6}\s+/, "").trim();
+}
+
+function buildContextPrefix(
+	filePath: string,
+	fileType: string,
+	metadata: Record<string, string | number | null | undefined>,
+): string {
+	const parts = [`File: ${filePath}`, `Type: ${fileType}`];
+	const heading = typeof metadata.heading === "string" ? metadata.heading : "";
+	const breadcrumb = typeof metadata.breadcrumb === "string" ? metadata.breadcrumb : "";
+	const symbol = typeof metadata.function_name === "string" ? metadata.function_name : "";
+	if (breadcrumb) parts.push(`Section: ${breadcrumb}`);
+	else if (heading) parts.push(`Section: ${normalizeHeading(heading)}`);
+	if (symbol) parts.push(`Symbol: ${symbol}`);
+	return parts.join("\n");
+}
+
+export function buildChunkEmbeddingText(
+	chunk: Pick<ChunkInsert, "content" | "file_path" | "file_type" | "metadata_json">,
+): string {
+	let metadata: Record<string, string | number | null | undefined> = {};
+	try {
+		metadata = JSON.parse(chunk.metadata_json) as Record<string, string | number | null | undefined>;
+	} catch {
+		metadata = {};
+	}
+	return `${buildContextPrefix(chunk.file_path, chunk.file_type, metadata)}\n\n${chunk.content}`;
+}
+
+function makeChunk(
+	content: string,
+	filePath: string,
+	fileType: string,
+	startLine: number,
+	endLine: number,
+	metadata: Record<string, string | number | null | undefined> = {},
+): Omit<ChunkInsert, "kb_id"> {
+	const metadata_json = JSON.stringify(metadata);
+	const chunk = {
+		content_hash: chunkIdentityHash({ content, filePath, fileType, startLine, endLine, metadataJson: metadata_json }),
+		content,
+		content_tokenized: "",
+		file_path: filePath,
+		file_type: fileType,
+		start_line: startLine,
+		end_line: endLine,
+		metadata_json,
+	};
+	return { ...chunk, content_tokenized: preTokenizeForFTS(buildChunkEmbeddingText(chunk)) };
+}
+
+export function chunkMarkdown(content: string, filePath: string): Omit<ChunkInsert, "kb_id">[] {
+	const lines = content.split("\n");
+	const chunks: Omit<ChunkInsert, "kb_id">[] = [];
+	const headingStack: string[] = [];
+	let sectionLines: string[] = [];
+	let startLine = 1;
+	let currentHeading = "";
+
+	function currentBreadcrumb(): string {
+		return headingStack.map(normalizeHeading).filter(Boolean).join(" > ");
+	}
+
+	function pushMarkdownChunk(text: string, start: number, end: number): void {
+		if (text.trim().length < 50) return;
+		chunks.push(
+			makeChunk(text.trim(), filePath, "markdown", start, end, {
+				heading: currentHeading,
+				breadcrumb: currentBreadcrumb(),
+			}),
+		);
+	}
+
+	function pushOversizedMarkdownParagraph(para: string, start: number): void {
+		let offset = 0;
+		let sliceStart = start;
+		while (offset < para.length) {
+			const slice = para.slice(offset, offset + MAX_TEXT_CHUNK_CHARS).trim();
+			if (slice.length >= 50) {
+				pushMarkdownChunk(slice, sliceStart, sliceStart + slice.split("\n").length);
+			}
+			sliceStart += slice.split("\n").length;
+			offset += MAX_TEXT_CHUNK_CHARS;
+		}
+	}
+
+	function flush(endLine: number): void {
+		const text = sectionLines.join("\n").trim();
+		if (text.length < 50) return;
+
+		const fullText = currentHeading ? `${currentHeading}\n\n${text}` : text;
+		const paragraphs = fullText.split(/\n\n+/);
+		let buffer: string[] = [];
+		let bufferStart = startLine;
+
+		for (const para of paragraphs) {
+			if (para.length > MAX_TEXT_CHUNK_CHARS) {
+				const oversizedText = buffer.length > 0 ? [...buffer, para].join("\n\n") : para;
+				const oversizedStart = buffer.length > 0 ? bufferStart : endLine;
+				if (buffer.length > 0) {
+					buffer = [];
+				}
+				pushOversizedMarkdownParagraph(oversizedText, oversizedStart);
+				bufferStart = endLine;
+				continue;
+			}
+			const next = [...buffer, para].join("\n\n");
+			if (estimateTokens(next) > MARKDOWN_TARGET_TOKENS && buffer.length > 0) {
+				pushMarkdownChunk(buffer.join("\n\n"), bufferStart, endLine);
+				buffer = [];
+				bufferStart = endLine;
+			}
+			buffer.push(para);
+		}
+
+		if (buffer.length > 0) {
+			pushMarkdownChunk(buffer.join("\n\n"), bufferStart, endLine);
+		}
+	}
+
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+
+		if (headingMatch && sectionLines.length > 0) {
+			flush(i);
+			sectionLines = [];
+			startLine = i + 1;
+		}
+
+		if (headingMatch) {
+			const level = headingMatch[1].length;
+			headingStack.splice(level - 1);
+			headingStack[level - 1] = line;
+			currentHeading = line;
+		} else {
+			sectionLines.push(line);
+		}
+	}
+
+	if (sectionLines.length > 0) {
+		flush(lines.length);
+	}
+
+	return chunks;
+}
+
+export function chunkText(content: string, filePath: string): Omit<ChunkInsert, "kb_id">[] {
+	const fileType = detectFileType(filePath);
+	const paragraphs = content.split(/\n\n+/);
+	const chunks: Omit<ChunkInsert, "kb_id">[] = [];
+	let buffer: string[] = [];
+	let bufferTokens = 0;
+	let lineOffset = 1;
+
+	function flush(): void {
+		const text = buffer.join("\n\n").trim();
+		if (text.length < 50) return;
+		chunks.push(makeChunk(text, filePath, fileType, lineOffset, lineOffset + text.split("\n").length));
+		lineOffset += text.split("\n").length + 1;
+	}
+
+	function pushOversizedParagraph(para: string): void {
+		let offset = 0;
+		while (offset < para.length) {
+			const slice = para.slice(offset, offset + MAX_TEXT_CHUNK_CHARS).trim();
+			if (slice.length >= 50) {
+				chunks.push(makeChunk(slice, filePath, fileType, lineOffset, lineOffset + slice.split("\n").length));
+			}
+			lineOffset += slice.split("\n").length;
+			offset += MAX_TEXT_CHUNK_CHARS;
+		}
+	}
+
+	for (const para of paragraphs) {
+		const paraTokens = estimateTokens(para);
+		if (para.length > MAX_TEXT_CHUNK_CHARS) {
+			if (buffer.length > 0) {
+				flush();
+				buffer = [];
+				bufferTokens = 0;
+			}
+			pushOversizedParagraph(para);
+			continue;
+		}
+		if (bufferTokens + paraTokens > TEXT_TARGET_TOKENS && buffer.length > 0) {
+			flush();
+			buffer = [];
+			bufferTokens = 0;
+		}
+		buffer.push(para);
+		bufferTokens += paraTokens;
+	}
+
+	if (buffer.length > 0) flush();
+	return chunks;
+}
+
+export async function chunkFile(content: string, filePath: string): Promise<Omit<ChunkInsert, "kb_id">[]> {
+	const fileType = detectFileType(filePath);
+	let chunks: Omit<ChunkInsert, "kb_id">[] = [];
+
+	if (fileType === "markdown") {
+		chunks = chunkMarkdown(content, filePath);
+	} else if (["typescript", "javascript", "python", "go", "rust", "java"].includes(fileType)) {
+		try {
+			const { chunkWithAST } = await import("./chunkers/code-ast.js");
+			chunks = await chunkWithAST(content, filePath, fileType);
+		} catch {
+			/* fallback below */
+		}
+	}
+
+	if (chunks.length === 0) chunks = chunkText(content, filePath);
+
+	// Fallback: if file has content but no chunks (too short for splitting), keep as single chunk
+	if (chunks.length === 0 && content.trim().length > 10) {
+		chunks = [makeChunk(content.trim(), filePath, fileType, 1, content.split("\n").length)];
+	}
+
+	return chunks;
+}

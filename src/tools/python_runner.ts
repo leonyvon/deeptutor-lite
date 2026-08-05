@@ -1,26 +1,29 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@sinclair/typebox";
+import type { TSchema } from "@sinclair/typebox";
 import { spawn } from "node:child_process";
 import { writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { ToolContext, Config } from "../types.ts";
 
-interface PythonConfig {
-  timeout: number;
-  maxTimeout: number;
+/**
+ * Generic identity wrapper so the tool's `execute` `params` is inferred from
+ * its `parameters` schema (mirrors the generic registerTool of the old pi
+ * extension). Keeps the exported factory return type as
+ * `AgentHarnessTool<ToolContext>`.
+ */
+function tool<TParams extends TSchema, TDetails = unknown>(
+  t: AgentHarnessTool<ToolContext, TParams, TDetails>
+): AgentHarnessTool<ToolContext, TParams, TDetails> {
+  return t;
 }
 
-interface KBConfig {
-  rootDir: string;
-  defaultKB: string;
-}
-
-export function registerPythonRunner(
-  pi: ExtensionAPI,
-  pythonConfig: PythonConfig,
-  kbConfig: KBConfig
-) {
-  pi.registerTool({
+export function createPythonRunnerTool(
+  cfg: Config["python"],
+  kb: Config["kb"]
+): AgentHarnessTool<ToolContext> {
+  return tool({
     name: "python_run",
     label: "Run Python Code",
     description:
@@ -29,15 +32,15 @@ export function registerPythonRunner(
       code: Type.String({ description: "Python source code to execute" }),
       timeout: Type.Optional(
         Type.Number({
-          default: pythonConfig.timeout,
-          description: `Timeout in seconds (max ${pythonConfig.maxTimeout})`,
+          default: cfg.timeout,
+          description: `Timeout in seconds (max ${cfg.maxTimeout})`,
         })
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       const timeoutSec = Math.min(
-        params.timeout ?? pythonConfig.timeout,
-        pythonConfig.maxTimeout
+        params.timeout ?? cfg.timeout,
+        cfg.maxTimeout
       );
       const tmpFile = join(
         process.env.TMPDIR ?? process.env.TEMP ?? "/tmp",
@@ -50,7 +53,7 @@ export function registerPythonRunner(
         const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>(
           (resolve, reject) => {
             const proc = spawn("python", [tmpFile], {
-              cwd: kbConfig.rootDir,
+              cwd: kb.rootDir,
               timeout: timeoutSec * 1000,
               windowsHide: true,
             });
