@@ -1,19 +1,25 @@
 /**
  * Agent runtime for the deeptutor TUI.
  *
- * Owns the pi-ai models collection, the AgentHarness, and live configuration.
+ * Owns the pi-ai models collection (full built-in catalog: every provider
+ * from @earendil-works/pi-ai), the AgentHarness, and live configuration.
  * Supports runtime model switching (like pi coding agent's /model), in-TUI
  * Brave configuration (web_search tool rebuild), and session replacement.
+ *
+ * Auth mirrors pi: a file CredentialStore (~/.deeptutor/auth.json) holds
+ * per-provider API keys; envApiKeyAuth resolves stored keys first, then
+ * falls back to environment variables.
  */
 import { AgentHarness } from "@earendil-works/pi-agent-core";
 import { createModels, createProvider } from "@earendil-works/pi-ai";
 import type { MutableModels } from "@earendil-works/pi-ai";
 import type { Model } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { Session, JsonlSessionMetadata, AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import type { Config, SearchConfig, ToolContext } from "../types.js";
 import { saveConfig } from "../config.js";
+import { FileCredentialStore } from "../auth-store.js";
 import { loadSkills, loadPromptTemplates } from "./resources.js";
 import { createWebSearchTool } from "../tools/web_search.js";
 import { createKBManagerTools } from "../tools/kb_manager.js";
@@ -107,12 +113,21 @@ export class DeeptutorRuntime {
   readonly session: Session<JsonlSessionMetadata>;
   harness: AgentHarness<ToolContext>;
   private readonly ask?: ToolContext["ask"];
+  private readonly credentials: FileCredentialStore;
 
   constructor(config: Config, session: Session<JsonlSessionMetadata>, ask?: ToolContext["ask"]) {
     this.config = config;
     this.session = session;
     this.ask = ask;
-    this.models = createModels();
+    this.credentials = new FileCredentialStore();
+    this.models = createModels({ credentials: this.credentials });
+    // Full pi built-in catalog: every provider from @earendil-works/pi-ai
+    // (anthropic, openai, google, deepseek, openrouter, ... ~38 providers).
+    for (const provider of builtinProviders()) {
+      if (!this.models.getProvider(provider.id)) {
+        this.models.setProvider(provider);
+      }
+    }
     this.harness = this.buildHarness();
   }
 
@@ -135,45 +150,42 @@ export class DeeptutorRuntime {
 
   /** Resolve (and register if needed) a model in the models collection. */
   private resolveModel(providerId: string, modelId: string): Model<any> {
-    if (providerId === OPENCODE_GO_PROVIDER_ID) {
-      if (!this.models.getProvider(OPENCODE_GO_PROVIDER_ID)) {
-        this.models.setProvider(opencodeGoProvider());
-      }
-      // Config-stored key wins for opencode-go (pi stores it in auth.json;
-      // we keep it in config.model.apiKey). Env var is the fallback.
-      if (this.config.model.apiKey && !process.env.OPENCODE_API_KEY) {
-        process.env.OPENCODE_API_KEY = this.config.model.apiKey;
-      }
-      const m = this.models.getModel(OPENCODE_GO_PROVIDER_ID, modelId);
-      if (!m) {
-        throw new Error(
-          `Model "${modelId}" not found in opencode-go provider. Available ids include deepseek-v4-flash, deepseek-v4-pro, glm-5.1, qwen3.6-plus.`
-        );
-      }
-      return m;
+    if (providerId === PROVIDER_ID) {
+      // openai-compat: (re)register a custom provider with the current endpoint.
+      const model = openAICompatModel(this.config, modelId, this.config.model.baseUrl ?? "http://127.0.0.1:11434/v1");
+      this.models.setProvider(openAICompatProvider(this.config, model));
+      return model;
     }
-    // openai-compat: (re)register a custom provider with the current endpoint.
-    const model = openAICompatModel(this.config, modelId, this.config.model.baseUrl ?? "http://127.0.0.1:11434/v1");
-    this.models.setProvider(openAICompatProvider(this.config, model));
-    return model;
+    const provider = this.models.getProvider(providerId);
+    if (!provider) {
+      throw new Error(
+        `Provider "${providerId}" not found. Run /model to pick from the built-in catalog.`
+      );
+    }
+    const m = this.models.getModel(providerId, modelId);
+    if (!m) {
+      throw new Error(
+        `Model "${modelId}" not found in provider "${providerId}". Run /model to pick from the catalog.`
+      );
+    }
+    return m;
   }
 
-  /** All selectable models across providers (for the TUI picker). */
+  /** All selectable models across every built-in provider (for the TUI picker). */
   listModelChoices(): ModelChoice[] {
     const out: ModelChoice[] = [];
-    // opencode-go built-in catalog
-    if (!this.models.getProvider(OPENCODE_GO_PROVIDER_ID)) {
-      this.models.setProvider(opencodeGoProvider());
-    }
-    for (const m of this.models.getModels(OPENCODE_GO_PROVIDER_ID)) {
-      out.push({
-        providerId: OPENCODE_GO_PROVIDER_ID,
-        providerName: "OpenCode Zen Go",
-        modelId: m.id,
-        modelName: m.name,
-        baseUrl: m.baseUrl,
-        reasoning: m.reasoning,
-      });
+    for (const provider of this.models.getProviders()) {
+      if (provider.id === PROVIDER_ID) continue; // handled below (custom endpoint)
+      for (const m of this.models.getModels(provider.id)) {
+        out.push({
+          providerId: provider.id,
+          providerName: provider.name,
+          modelId: m.id,
+          modelName: m.name,
+          baseUrl: m.baseUrl,
+          reasoning: m.reasoning,
+        });
+      }
     }
     // current openai-compat endpoint (single custom model)
     const c = this.config.model;
@@ -200,19 +212,21 @@ export class DeeptutorRuntime {
       cfg.model = modelId;
       if (opts?.baseUrl) cfg.baseUrl = opts.baseUrl;
       if (opts?.apiKey !== undefined) cfg.apiKey = opts.apiKey;
-    } else if (providerId === OPENCODE_GO_PROVIDER_ID) {
-      cfg.provider = OPENCODE_GO_PROVIDER_ID;
+    } else {
+      const provider = this.models.getProvider(providerId);
+      if (!provider) {
+        throw new Error(`Unknown provider: ${providerId}`);
+      }
+      cfg.provider = providerId;
       cfg.model = modelId;
-      if (opts?.apiKey !== undefined) cfg.apiKey = opts.apiKey;
-      // opencode-go uses its built-in endpoint; drop stale openai-compat baseUrl.
+      if (opts?.apiKey !== undefined) await this.setApiKey(providerId, opts.apiKey);
+      // built-in providers use their catalog endpoint; drop stale openai-compat baseUrl.
       delete cfg.baseUrl;
-      if (!this.authStatus(OPENCODE_GO_PROVIDER_ID).configured) {
+      if (!(await this.authStatus(providerId)).configured) {
         throw new Error(
-          `No API key for opencode-go. Press /login to enter one (saved to ~/.deeptutor/config.json), or set OPENCODE_API_KEY.`
+          `No API key for ${provider.name}. Press /model to enter one (saved to ~/.deeptutor/auth.json), or set its env var (e.g. OPENCODE_API_KEY).`
         );
       }
-    } else {
-      throw new Error(`Unknown provider: ${providerId}`);
     }
     const model = this.resolveModel(cfg.provider, cfg.model);
     await this.harness.setModel(model);
@@ -220,32 +234,38 @@ export class DeeptutorRuntime {
     return model;
   }
 
-  /** Whether a provider needs an API key and whether one is configured. */
-  authStatus(providerId: string): { needsKey: boolean; configured: boolean; source: string } {
-    if (providerId === OPENCODE_GO_PROVIDER_ID) {
-      const key = this.config.model.apiKey || process.env.OPENCODE_API_KEY;
+  /**
+   * Whether a provider needs an API key and whether one is configured.
+   * Resolution order matches pi: stored credential (auth.json) → env vars.
+   */
+  async authStatus(providerId: string): Promise<{ needsKey: boolean; configured: boolean; source: string }> {
+    if (providerId === PROVIDER_ID) {
+      // openai-compat: key optional (Ollama needs none); stored key used when present.
       return {
-        needsKey: true,
-        configured: Boolean(key),
-        source: this.config.model.apiKey ? "config" : process.env.OPENCODE_API_KEY ? "env (OPENCODE_API_KEY)" : "none",
+        needsKey: false,
+        configured: true,
+        source: this.config.model.apiKey ? "config" : "optional",
       };
     }
-    // openai-compat: key optional (Ollama needs none); stored key used when present.
+    const provider = this.models.getProvider(providerId);
+    if (!provider) {
+      return { needsKey: false, configured: false, source: "unknown provider" };
+    }
+    const auth = await this.models.getAuth(providerId);
     return {
-      needsKey: false,
-      configured: true,
-      source: this.config.model.apiKey ? "config" : "optional",
+      needsKey: Boolean(provider.auth?.apiKey),
+      configured: Boolean(auth?.auth?.apiKey),
+      source: auth?.source ?? "none",
     };
   }
 
-  /** Store an API key for a provider (like pi's /login → auth.json; we use config.json). */
+  /** Store an API key for a provider (like pi's /login → auth.json). */
   async setApiKey(providerId: string, key: string): Promise<void> {
     if (!key.trim()) throw new Error("API key cannot be empty");
-    this.config.model.apiKey = key.trim();
-    saveConfig(this.config);
-    if (providerId === OPENCODE_GO_PROVIDER_ID) {
-      process.env.OPENCODE_API_KEY = this.config.model.apiKey;
-    }
+    await this.credentials.modify(providerId, async () => ({
+      type: "api_key",
+      key: key.trim(),
+    }));
   }
 
   /** Update Brave search config live (rebuilds the web_search tool). */
@@ -266,9 +286,10 @@ export class DeeptutorRuntime {
   currentModel(): ModelChoice {
     const c = this.config.model;
     const m = this.harness.getModel();
+    const provider = this.models.getProvider(c.provider ?? PROVIDER_ID);
     return {
       providerId: c.provider ?? PROVIDER_ID,
-      providerName: c.provider === OPENCODE_GO_PROVIDER_ID ? "OpenCode Zen Go" : "OpenAI Compatible",
+      providerName: provider?.name ?? "OpenAI Compatible",
       modelId: c.model,
       modelName: m.name ?? c.model,
       baseUrl: m.baseUrl ?? c.baseUrl,

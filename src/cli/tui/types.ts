@@ -21,6 +21,7 @@ export type AppMode =
       step: "provider" | "apikey" | "model";
       providerId?: string;
       apiKeyValue: string;
+      searchQuery: string;
       selectedIndex: number;
     }
   | {

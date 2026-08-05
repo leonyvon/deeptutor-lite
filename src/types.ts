@@ -35,20 +35,20 @@ export interface PythonConfig {
 
 export interface ModelConfig {
   /**
-   * Provider backend: "openai-compat" (default, any OpenAI-compatible
-   * endpoint such as Ollama) or "opencode-go" (OpenCode Zen Go, key via
-   * OPENCODE_API_KEY, includes deepseek-v4-flash etc.).
+   * Provider backend id. Any built-in pi-ai provider (e.g. "opencode-go",
+   * "anthropic", "openai", "openrouter", ...) or "openai-compat" for a
+   * custom OpenAI-compatible endpoint (Ollama etc.).
    */
-  provider?: "openai-compat" | "opencode-go";
+  provider?: string;
   /**
    * OpenAI-compatible base URL, e.g. http://127.0.0.1:11434/v1.
-   * Only meaningful for "openai-compat"; ignored for "opencode-go"
-   * (which uses its built-in catalog endpoint).
+   * Only meaningful for "openai-compat"; ignored for built-in providers
+   * (which use their catalog endpoint).
    */
   baseUrl?: string;
   /** Model id, e.g. qwen3:8b or deepseek-v4-flash */
   model: string;
-  /** Optional API key for providers (openai-compat or opencode-go). */
+  /** Optional API key for the openai-compat endpoint. */
   apiKey?: string;
   /** Embedding model id used for RAG and semantic grading. */
   embeddingModel: string;

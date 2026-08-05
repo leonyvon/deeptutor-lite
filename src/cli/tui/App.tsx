@@ -237,7 +237,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
         }
 
         if (cmd === "/model") {
-          setMode({ type: "model", step: "provider", apiKeyValue: "", selectedIndex: 0 });
+          setMode({ type: "model", step: "provider", apiKeyValue: "", searchQuery: "", selectedIndex: 0 });
           return;
         }
 
@@ -504,6 +504,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             step={mode.step}
             providerId={mode.providerId}
             apiKeyValue={mode.apiKeyValue}
+            searchQuery={mode.searchQuery}
             onSelect={async ({ providerId, modelId }) => {
               try {
                 await runtime.switchModel(providerId, modelId);
@@ -540,7 +541,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             onChangeStep={(step, providerId) =>
               setMode((prev) =>
                 prev.type === "model"
-                  ? { ...prev, step, providerId }
+                  ? { ...prev, step, providerId, searchQuery: step === "model" ? "" : prev.searchQuery }
                   : prev
               )
             }
@@ -551,6 +552,13 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                   : prev
               )
             }
+            onChangeSearchQuery={(value) =>
+              setMode((prev) =>
+                prev.type === "model"
+                  ? { ...prev, searchQuery: value, selectedIndex: 0 }
+                  : prev
+              )
+            }
             onSubmitApiKey={async (value) => {
               const pid = mode.providerId;
               if (!pid) return;
@@ -558,7 +566,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 await runtime.setApiKey(pid, value);
                 setMode((prev) =>
                   prev.type === "model"
-                    ? { ...prev, step: "model", apiKeyValue: "" }
+                    ? { ...prev, step: "model", apiKeyValue: "", searchQuery: "" }
                     : prev
                 );
               } catch (err: any) {
