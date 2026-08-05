@@ -22,10 +22,12 @@ export function MessageList({ messages }: MessageListProps): React.ReactElement 
           )}
           {msg.type === "assistant" && (
             <Box flexDirection="column">
-              <Text bold color="white">
-                Assistant
+              <Text bold color={msg.isError ? "red" : "white"}>
+                {msg.isError ? "Error" : "Assistant"}
               </Text>
-              <Text color={msg.streaming ? undefined : "gray"}>{msg.text}</Text>
+              <Text color={msg.isError ? "red" : msg.streaming ? undefined : "gray"}>
+                {msg.text}
+              </Text>
               {msg.streaming && <Text color="gray">▎</Text>}
             </Box>
           )}

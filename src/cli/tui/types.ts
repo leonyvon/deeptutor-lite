@@ -5,7 +5,7 @@ import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
 
 export type UIMessage =
   | { type: "user"; text: string; id: string }
-  | { type: "assistant"; text: string; streaming: boolean; id: string }
+  | { type: "assistant"; text: string; streaming: boolean; id: string; isError?: boolean }
   | {
       type: "tool";
       toolName: string;
@@ -18,8 +18,9 @@ export type AppMode =
   | { type: "chat" }
   | {
       type: "model";
-      step: "provider" | "model";
+      step: "provider" | "apikey" | "model";
       providerId?: string;
+      apiKeyValue: string;
       selectedIndex: number;
     }
   | {

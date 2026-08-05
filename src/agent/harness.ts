@@ -139,6 +139,11 @@ export class DeeptutorRuntime {
       if (!this.models.getProvider(OPENCODE_GO_PROVIDER_ID)) {
         this.models.setProvider(opencodeGoProvider());
       }
+      // Config-stored key wins for opencode-go (pi stores it in auth.json;
+      // we keep it in config.model.apiKey). Env var is the fallback.
+      if (this.config.model.apiKey && !process.env.OPENCODE_API_KEY) {
+        process.env.OPENCODE_API_KEY = this.config.model.apiKey;
+      }
       const m = this.models.getModel(OPENCODE_GO_PROVIDER_ID, modelId);
       if (!m) {
         throw new Error(
@@ -148,7 +153,7 @@ export class DeeptutorRuntime {
       return m;
     }
     // openai-compat: (re)register a custom provider with the current endpoint.
-    const model = openAICompatModel(this.config, modelId, this.config.model.baseUrl);
+    const model = openAICompatModel(this.config, modelId, this.config.model.baseUrl ?? "http://127.0.0.1:11434/v1");
     this.models.setProvider(openAICompatProvider(this.config, model));
     return model;
   }
@@ -185,7 +190,8 @@ export class DeeptutorRuntime {
 
   /**
    * Switch the active model at runtime. Persists to ~/.deeptutor/config.json.
-   * For openai-compat, an optional baseUrl/apiKey can be supplied (custom endpoint).
+   * Mirrors pi coding agent's /model: providers requiring an API key fail
+   * loudly here (no silent switch to a broken model).
    */
   async switchModel(providerId: string, modelId: string, opts?: { baseUrl?: string; apiKey?: string }): Promise<Model<any>> {
     const cfg = this.config.model;
@@ -197,6 +203,14 @@ export class DeeptutorRuntime {
     } else if (providerId === OPENCODE_GO_PROVIDER_ID) {
       cfg.provider = OPENCODE_GO_PROVIDER_ID;
       cfg.model = modelId;
+      if (opts?.apiKey !== undefined) cfg.apiKey = opts.apiKey;
+      // opencode-go uses its built-in endpoint; drop stale openai-compat baseUrl.
+      delete cfg.baseUrl;
+      if (!this.authStatus(OPENCODE_GO_PROVIDER_ID).configured) {
+        throw new Error(
+          `No API key for opencode-go. Press /login to enter one (saved to ~/.deeptutor/config.json), or set OPENCODE_API_KEY.`
+        );
+      }
     } else {
       throw new Error(`Unknown provider: ${providerId}`);
     }
@@ -204,6 +218,34 @@ export class DeeptutorRuntime {
     await this.harness.setModel(model);
     saveConfig(this.config);
     return model;
+  }
+
+  /** Whether a provider needs an API key and whether one is configured. */
+  authStatus(providerId: string): { needsKey: boolean; configured: boolean; source: string } {
+    if (providerId === OPENCODE_GO_PROVIDER_ID) {
+      const key = this.config.model.apiKey || process.env.OPENCODE_API_KEY;
+      return {
+        needsKey: true,
+        configured: Boolean(key),
+        source: this.config.model.apiKey ? "config" : process.env.OPENCODE_API_KEY ? "env (OPENCODE_API_KEY)" : "none",
+      };
+    }
+    // openai-compat: key optional (Ollama needs none); stored key used when present.
+    return {
+      needsKey: false,
+      configured: true,
+      source: this.config.model.apiKey ? "config" : "optional",
+    };
+  }
+
+  /** Store an API key for a provider (like pi's /login → auth.json; we use config.json). */
+  async setApiKey(providerId: string, key: string): Promise<void> {
+    if (!key.trim()) throw new Error("API key cannot be empty");
+    this.config.model.apiKey = key.trim();
+    saveConfig(this.config);
+    if (providerId === OPENCODE_GO_PROVIDER_ID) {
+      process.env.OPENCODE_API_KEY = this.config.model.apiKey;
+    }
   }
 
   /** Update Brave search config live (rebuilds the web_search tool). */

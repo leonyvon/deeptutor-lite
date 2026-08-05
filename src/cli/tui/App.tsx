@@ -118,15 +118,57 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
           }
           return next;
         });
+      } else if (event.type === "message_end") {
+        const msg = event.message;
+        if ("stopReason" in msg && msg.stopReason === "error") {
+          const errorText =
+            "errorMessage" in msg && typeof msg.errorMessage === "string"
+              ? msg.errorMessage
+              : "Unknown error";
+          setMessages((prev) => [
+            ...prev,
+            {
+              type: "assistant",
+              text: `⚠ 模型调用失败: ${errorText}`,
+              streaming: false,
+              isError: true,
+              id: nextId(),
+            },
+          ]);
+          setIsProcessing(false);
+        }
       } else if (event.type === "agent_end") {
         setMessages((prev) => {
-          const last = prev[prev.length - 1];
+          let next = [...prev];
+          const last = next[next.length - 1];
           if (last && last.type === "assistant" && last.streaming) {
-            const next = [...prev];
             next[next.length - 1] = { ...last, streaming: false };
-            return next;
           }
-          return prev;
+          // Fallback: if the run ended with an error message that never produced
+          // text_delta, it won't have a corresponding UI message. Render it now.
+          const lastMsg = event.messages[event.messages.length - 1];
+          if (
+            lastMsg &&
+            "stopReason" in lastMsg &&
+            lastMsg.stopReason === "error"
+          ) {
+            const lastUi = next[next.length - 1];
+            if (!lastUi || lastUi.type !== "assistant" || !lastUi.isError) {
+              const errorText =
+                "errorMessage" in lastMsg &&
+                typeof lastMsg.errorMessage === "string"
+                  ? lastMsg.errorMessage
+                  : "Unknown error";
+              next.push({
+                type: "assistant",
+                text: `⚠ 模型调用失败: ${errorText}`,
+                streaming: false,
+                isError: true,
+                id: nextId(),
+              });
+            }
+          }
+          return next;
         });
         setIsProcessing(false);
       }
@@ -195,7 +237,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
         }
 
         if (cmd === "/model") {
-          setMode({ type: "model", step: "provider", selectedIndex: 0 });
+          setMode({ type: "model", step: "provider", apiKeyValue: "", selectedIndex: 0 });
           return;
         }
 
@@ -461,6 +503,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             selectedIndex={mode.selectedIndex}
             step={mode.step}
             providerId={mode.providerId}
+            apiKeyValue={mode.apiKeyValue}
             onSelect={async ({ providerId, modelId }) => {
               try {
                 await runtime.switchModel(providerId, modelId);
@@ -501,6 +544,36 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                   : prev
               )
             }
+            onChangeApiKeyValue={(value) =>
+              setMode((prev) =>
+                prev.type === "model"
+                  ? { ...prev, apiKeyValue: value }
+                  : prev
+              )
+            }
+            onSubmitApiKey={async (value) => {
+              const pid = mode.providerId;
+              if (!pid) return;
+              try {
+                await runtime.setApiKey(pid, value);
+                setMode((prev) =>
+                  prev.type === "model"
+                    ? { ...prev, step: "model", apiKeyValue: "" }
+                    : prev
+                );
+              } catch (err: any) {
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    type: "assistant",
+                    text: `Error saving API key: ${err?.message ?? String(err)}`,
+                    streaming: false,
+                    id: nextId(),
+                  },
+                ]);
+                setMode({ type: "chat" });
+              }
+            }}
           />
         </Box>
       ) : mode.type === "brave" ? (
