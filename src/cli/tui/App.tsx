@@ -245,10 +245,11 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   }, []);
 
   // Scroll handling: ↑/↓ and PgUp/PgDn when in chat mode and not processing.
-  // We deliberately do NOT enable SGR mouse tracking: the terminal translates
-  // the wheel into ↑/↓ arrow keys in the alternate screen, and leaving mouse
-  // events to the terminal preserves native click-drag text selection (pi and
-  // opencode do the same).
+  // We deliberately do NOT enable SGR mouse tracking (xterm 1000/1006): that
+  // would steal mouse events from the terminal and break click-drag text
+  // selection. Instead we enable Alternate Scroll (xterm 1007) — the terminal
+  // then translates the wheel into ↑/↓ arrow keys for us while leaving mouse
+  // selection to the terminal itself (pi/opencode do the same).
   useInput(
     (input, key) => {
       // While the slash-command palette is open, ↑/↓ belong to menu navigation.
@@ -265,6 +266,15 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     },
     { isActive: mode.type === "chat" && !isProcessing }
   );
+
+  // Alternate Scroll (DECSET 1007): wheel → ↑/↓ arrow keys in the alternate
+  // screen without enabling mouse tracking, so native drag-select survives.
+  useEffect(() => {
+    process.stdout.write("\x1b[?1007h");
+    return () => {
+      process.stdout.write("\x1b[?1007l");
+    };
+  }, []);
 
   // Global Ctrl+C exit
   useInput((input, key) => {
