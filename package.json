@@ -22,7 +22,6 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "@clack/prompts": "^0.10.1",
     "@earendil-works/pi-agent-core": "^0.83.0",
     "@earendil-works/pi-ai": "^0.83.0",
     "@huggingface/transformers": "^3.8.1",
@@ -30,7 +29,9 @@
     "better-sqlite3": "^12.11.1",
     "chalk": "^5.6.0",
     "ignore": "^7.0.5",
+    "ink": "^7.1.1",
     "mammoth": "^1.9.0",
+    "react": "^19.2.8",
     "tree-sitter": "^0.22.4",
     "tree-sitter-go": "^0.23.4",
     "tree-sitter-java": "^0.23.5",
@@ -43,6 +44,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
     "tsx": "^4.23.7",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"

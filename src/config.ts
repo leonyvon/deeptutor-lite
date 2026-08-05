@@ -2,7 +2,7 @@
  * Configuration loading: defaults <- config.json (app root) <- ~/.deeptutor/config.json
  * with ${ENV_VAR} reference resolution (same mechanism as the old pi extension).
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -96,4 +96,24 @@ export function loadConfig(): Config {
     session: { ...c.session, dir: expandHome(resolveEnvVars(c.session.dir)) },
   });
   return resolve(cfg);
+}
+
+/**
+ * Persist config to ~/.deeptutor/config.json (the user-level override file).
+ * Used by the in-TUI settings (model switch, Brave config). The app-root
+ * config.json is left untouched.
+ */
+export function saveConfig(cfg: Config): string {
+  const home = dataHome();
+  const path = join(home, "config.json");
+  mkdirSync(home, { recursive: true });
+  const serializable = {
+    search: cfg.search,
+    kb: cfg.kb,
+    python: cfg.python,
+    model: cfg.model,
+    session: cfg.session,
+  };
+  writeFileSync(path, JSON.stringify(serializable, null, 2), "utf-8");
+  return path;
 }

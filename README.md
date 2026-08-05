@@ -24,8 +24,10 @@ A lightweight document tutoring CLI — RAG Q&A over your knowledge bases, web s
 - **Node.js >= 22**
 - **Python >= 3.10** (for python_run and visualization)
 - **An OpenAI-compatible LLM endpoint** (e.g. [Ollama](https://ollama.com)) serving:
-  - a chat model (e.g. `qwen2.5-coder:14b`)
+  - a chat model (e.g. `qwen3:8b`)
   - an embedding model (e.g. `nomic-embed-text`)
+- Optional: an **OpenCode Zen Go** API key (`OPENCODE_API_KEY`) for cloud models
+  (deepseek-v4-flash, deepseek-v4-pro, glm-5.1, qwen3.6-plus, ...)
 
 ### Install
 
@@ -46,9 +48,15 @@ Copy `config.example.json` to `config.json` (or `~/.deeptutor/config.json` — t
 ```jsonc
 {
   "search": { "apiKey": "${BRAVE_API_KEY}", "proxy": "http://127.0.0.1:7897" },
-  "model": { "baseUrl": "http://127.0.0.1:11434/v1", "model": "qwen2.5-coder:14b", "embeddingModel": "nomic-embed-text" }
+  "model": { "provider": "openai-compat", "baseUrl": "http://127.0.0.1:11434/v1", "model": "qwen3:8b", "embeddingModel": "nomic-embed-text" }
 }
 ```
+
+`model.provider`:
+- `"openai-compat"` (default) — any OpenAI-compatible endpoint (Ollama, vLLM, ...)
+- `"opencode-go"` — OpenCode Zen Go cloud catalog (auth via `OPENCODE_API_KEY`)
+
+You can also change the model at runtime with `/model` inside the TUI — no config editing needed.
 
 Data lives under `~/.deeptutor/` (override with `DEEPTUTOR_HOME`):
 - `kbs/<name>/` — knowledge base documents
@@ -62,19 +70,14 @@ mkdir -p ~/.deeptutor/kbs/default
 deeptutor
 ```
 
-Inside the REPL:
+A full-screen TUI opens (opencode-style chat interface). Type messages to talk to the tutor, `/help` for commands.
 
-```
-deeptutor — document tutoring. Type /help for commands.
-> Index a document: "use knowledge_add to index ~/.deeptutor/kbs/default/your-doc.md"
-> Ask a question:   "what does the document say about X?"
-> /mastery          start a structured learning path
-```
-
-## Commands
+## TUI Commands
 
 | Command | Description |
 |---------|-------------|
+| `/model` | Switch LLM provider/model at runtime (OpenCode Zen Go catalog + custom OpenAI-compatible endpoint) |
+| `/brave` | Configure Brave search in the interface (API key / proxy / max results, persisted to config) |
 | `/quiz <topic>` | Generate a quiz from the knowledge base |
 | `/research <topic>` | Run the research agent |
 | `/solve <problem>` | Solve a problem step by step |
@@ -84,6 +87,8 @@ deeptutor — document tutoring. Type /help for commands.
 | `/list` / `/switch` | List / switch sessions |
 | `/help` / `/quit` | Help / exit |
 
+Keys: `↑↓` navigate pickers, `Enter` confirm, `Esc` cancel, `Ctrl+C` exit.
+
 ## Tools
 
 web_search, knowledge_add/search/list/remove/update, kb_switch/list/create, python_run, mastery_generate/quiz/grade/update/status/assess/build/diagnostic.
@@ -91,13 +96,14 @@ web_search, knowledge_add/search/list/remove/update, kb_switch/list/create, pyth
 ## Architecture
 
 ```
-deeptutor CLI (clack REPL)
-├── AgentHarness (pi-agent-core)   — agentic loop, sessions, compaction
-├── pi-ai                          — OpenAI-compatible LLM provider
-├── src/tools/                     — 25+ tools (web_search, kb_*, knowledge_*, python_run, mastery_*)
-├── src/rag/                       — vendored pi-knowledge engine (BM25 FTS5 + vector)
-├── skills/ prompts/               — 6 SKILL.md workflows + 5 prompt templates
-└── src/session/                   — JSONL session repository
+deeptutor TUI (ink — opencode-style full-screen chat)
+├── DeeptutorRuntime              — live model switching, Brave config, sessions
+├── AgentHarness (pi-agent-core)  — agentic loop, sessions, compaction
+├── pi-ai                         — OpenAI-compatible + OpenCode Zen Go providers
+├── src/tools/                    — 25+ tools (web_search, kb_*, knowledge_*, python_run, mastery_*)
+├── src/rag/                      — vendored pi-knowledge engine (BM25 FTS5 + vector)
+├── skills/ prompts/              — 6 SKILL.md workflows + 5 prompt templates
+└── src/session/                  — JSONL session repository
 ```
 
 ## Performance
@@ -107,12 +113,12 @@ deeptutor CLI (clack REPL)
 | Install size | ~50MB + Python |
 | RAM baseline | 50-150MB |
 | Cold start | < 1s |
-| Dependencies | pi-agent-core, pi-ai, clack, better-sqlite3, undici |
+| Dependencies | pi-agent-core, pi-ai, ink, better-sqlite3, undici |
 
 ## Development
 
 ```bash
-npm run dev      # run from source (node --experimental-strip-types)
+npm run dev      # run from source (tsx)
 npm run build    # compile to dist/
 npm test         # unit tests
 ```
