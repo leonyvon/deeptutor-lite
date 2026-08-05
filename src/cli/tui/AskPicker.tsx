@@ -1,6 +1,8 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { Box, Text, useInput } from "ink";
 import { resolveAsk } from "./ask.js";
+
+const WINDOW_SIZE = 8;
 
 interface AskPickerProps {
   question: string;
@@ -16,6 +18,17 @@ export function AskPicker({
   onChangeIndex,
 }: AskPickerProps): React.ReactElement {
   const entries = Object.entries(options);
+
+  // Windowed list: keep the selection visible, cap height at WINDOW_SIZE
+  const windowStart = useMemo(() => {
+    if (entries.length <= WINDOW_SIZE) return 0;
+    return Math.max(0, Math.min(selectedIndex, entries.length - WINDOW_SIZE));
+  }, [entries.length, selectedIndex]);
+
+  const visibleEntries = useMemo(
+    () => entries.slice(windowStart, windowStart + WINDOW_SIZE),
+    [entries, windowStart]
+  );
 
   useInput((input, key) => {
     if (key.upArrow) {
@@ -42,14 +55,24 @@ export function AskPicker({
         {question}
       </Text>
       <Box flexDirection="column" marginTop={1}>
-        {entries.map(([label, text], i) => (
-          <Box key={label}>
-            <Text color={i === selectedIndex ? "blue" : undefined}>
-              {i === selectedIndex ? "> " : "  "}
-              {label}) {text}
+        {visibleEntries.map(([label, text], i) => {
+          const globalIdx = windowStart + i;
+          return (
+            <Box key={label}>
+              <Text color={globalIdx === selectedIndex ? "blue" : undefined}>
+                {globalIdx === selectedIndex ? "> " : "  "}
+                {label}) {text}
+              </Text>
+            </Box>
+          );
+        })}
+        {entries.length > WINDOW_SIZE && (
+          <Box marginTop={1}>
+            <Text dimColor>
+              (showing {visibleEntries.length} of {entries.length})
             </Text>
           </Box>
-        ))}
+        )}
       </Box>
       <Box marginTop={1}>
         <Text dimColor>↑↓ navigate · enter select · esc cancel</Text>

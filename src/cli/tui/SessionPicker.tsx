@@ -1,7 +1,9 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { Box, Text, useInput } from "ink";
 import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
 import { basename } from "node:path";
+
+const WINDOW_SIZE = 8;
 
 interface SessionPickerProps {
   sessions: JsonlSessionMetadata[];
@@ -29,6 +31,17 @@ export function SessionPicker({
   onCancel,
   onChangeIndex,
 }: SessionPickerProps): React.ReactElement {
+  // Windowed list: keep the selection visible, cap height at WINDOW_SIZE
+  const windowStart = useMemo(() => {
+    if (sessions.length <= WINDOW_SIZE) return 0;
+    return Math.max(0, Math.min(selectedIndex, sessions.length - WINDOW_SIZE));
+  }, [sessions.length, selectedIndex]);
+
+  const visibleSessions = useMemo(
+    () => sessions.slice(windowStart, windowStart + WINDOW_SIZE),
+    [sessions, windowStart]
+  );
+
   useInput((input, key) => {
     if (key.upArrow) {
       onChangeIndex(Math.max(0, selectedIndex - 1));
@@ -53,7 +66,8 @@ export function SessionPicker({
         Select Session
       </Text>
       <Box flexDirection="column" marginTop={1}>
-        {sessions.map((s, i) => {
+        {visibleSessions.map((s, i) => {
+          const globalIdx = windowStart + i;
           const rawPreview = previews[s.path];
           const hasPreview = rawPreview && rawPreview.trim().length > 0;
           const preview = hasPreview ? rawPreview : "（空会话）";
@@ -63,8 +77,8 @@ export function SessionPicker({
             preview.length > 36 ? preview.slice(0, 36) + "…" : preview;
           return (
             <Box key={s.path} flexDirection="row">
-              <Text color={i === selectedIndex ? "green" : undefined}>
-                {i === selectedIndex ? "> " : "  "}
+              <Text color={globalIdx === selectedIndex ? "green" : undefined}>
+                {globalIdx === selectedIndex ? "> " : "  "}
                 {isCurrent ? "▶ " : "  "}
                 {mainText}
               </Text>
@@ -77,6 +91,13 @@ export function SessionPicker({
             </Box>
           );
         })}
+        {sessions.length > WINDOW_SIZE && (
+          <Box marginTop={1}>
+            <Text dimColor>
+              (showing {visibleSessions.length} of {sessions.length})
+            </Text>
+          </Box>
+        )}
       </Box>
       <Box marginTop={1}>
         <Text dimColor>↑↓ navigate · enter select · esc cancel</Text>
