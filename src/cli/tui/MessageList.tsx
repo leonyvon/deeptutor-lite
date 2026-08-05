@@ -71,50 +71,74 @@ export function MessageList({
   scrollOffset,
   visibleHeight,
 }: MessageListProps): React.ReactElement {
-  // Build a window of visible messages based on estimated heights.
-  // scrollOffset semantics: 0 = at the newest (bottom); >0 = shifted up.
-  const { visibleMessages, startIndex } = useMemo(() => {
+  // Build a window of visible messages based on estimated heights, with
+  // sub-message granularity: scrollOffset rows walk upward from the newest
+  // message, and the first visible message may be partially cut at its top
+  // (cutTop rows hidden above the viewport). This gives smooth per-row
+  // scrolling instead of whole-message jumps.
+  const { visibleMessages, startIndex, cutTop } = useMemo(() => {
     if (messages.length === 0) {
-      return { visibleMessages: [] as UIMessage[], startIndex: 0 };
+      return { visibleMessages: [] as UIMessage[], startIndex: 0, cutTop: 0 };
     }
     const termWidth = process.stdout.columns ?? 80;
     const heights = messages.map((m) => estimateMessageHeight(m, termWidth));
 
-    // 1) Base window: fill from the bottom (newest) upward until visibleHeight rows.
-    let top = messages.length; // index of first visible message
+    // A) Walk from the bottom (newest) upward by scrollOffset rows.
+    //    firstIdx = first visible message; cutTop = rows of it hidden above.
+    let firstIdx = messages.length;
+    let cutTop = 0;
+    let remain = scrollOffset;
+    for (let i = messages.length - 1; i >= 0 && remain > 0; i--) {
+      const h = heights[i];
+      if (remain >= h) {
+        remain -= h;
+        continue; // whole message scrolled out of view
+      }
+      firstIdx = i; // partial: bottom (h - remain) rows still visible
+      cutTop = remain;
+      remain = 0;
+      break;
+    }
+    if (firstIdx === messages.length) {
+      // Everything scrolled past (clamp should prevent this; belt & braces).
+      firstIdx = 0;
+      cutTop = 0;
+    }
+
+    // B) Fill downward from firstIdx until visibleHeight rows are consumed.
+    let lastIdx = firstIdx;
     let filled = 0;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (filled + heights[i] > visibleHeight) break;
-      filled += heights[i];
-      top = i;
+    for (let i = firstIdx; i < messages.length; i++) {
+      const visibleH = i === firstIdx ? heights[i] - cutTop : heights[i];
+      if (filled + visibleH > visibleHeight) break;
+      filled += visibleH;
+      lastIdx = i + 1;
     }
-    // Even if the newest message alone is taller than the view, show it.
-    if (top === messages.length) top = messages.length - 1;
+    if (lastIdx <= firstIdx) lastIdx = firstIdx + 1; // at least one message
 
-    // 2) Apply scroll: move the window up by scrollOffset rows (by height).
-    let remaining = scrollOffset;
-    while (remaining > 0 && top > 0) {
-      remaining -= heights[top - 1];
-      top--;
-    }
-
-    // 3) Re-fill the window downward from the new top.
-    let bottom = top;
-    let used = 0;
-    for (let i = top; i < messages.length; i++) {
-      if (used + heights[i] > visibleHeight) break;
-      used += heights[i];
-      bottom = i + 1;
-    }
-    if (bottom <= top) bottom = top + 1; // at least one message
-
-    return { visibleMessages: messages.slice(top, bottom), startIndex: top };
+    return {
+      visibleMessages: messages.slice(firstIdx, lastIdx),
+      startIndex: firstIdx,
+      cutTop,
+    };
   }, [messages, scrollOffset, visibleHeight]);
 
+  const atTop = startIndex === 0 && cutTop === 0;
+
   return (
-    <Box flexDirection="column" flexGrow={1} justifyContent="flex-end" overflow="hidden">
-      {visibleMessages.map((msg) => (
-        <Box key={msg.id} flexShrink={0} marginY={msg.type === "tool" ? 0 : 1}>
+    <Box
+      flexDirection="column"
+      flexGrow={1}
+      justifyContent={atTop ? "flex-start" : "flex-end"}
+      overflow="hidden"
+    >
+      {visibleMessages.map((msg, i) => (
+        <Box
+          key={msg.id}
+          flexShrink={0}
+          marginY={msg.type === "tool" ? 0 : 1}
+          marginTop={i === 0 && cutTop > 0 ? -cutTop : undefined}
+        >
           {msg.type === "user" && (
             <Box flexDirection="column">
               <Text bold color="cyan">
