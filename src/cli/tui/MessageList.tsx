@@ -9,7 +9,7 @@ interface MessageListProps {
   visibleHeight: number;
 }
 
-function estimateMessageHeight(msg: UIMessage, termWidth: number): number {
+export function estimateMessageHeight(msg: UIMessage, termWidth: number): number {
   const width = Math.max(termWidth - 8, 20);
   let lines = 0;
   if (msg.type === "user") {
@@ -27,37 +27,44 @@ export function MessageList({
   scrollOffset,
   visibleHeight,
 }: MessageListProps): React.ReactElement {
-  // Build a window of visible messages based on estimated heights
-  const { visibleMessages, startIndex, endIndex } = useMemo(() => {
-    const termWidth = process.stdout.columns ?? 80;
-    let consumed = 0;
-    let start = 0;
-    let end = 0;
-    // Walk from the bottom (latest) upward by scrollOffset rows
-    let remainingOffset = scrollOffset;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const h = estimateMessageHeight(messages[i], termWidth);
-      if (remainingOffset > 0) {
-        remainingOffset -= h;
-        if (remainingOffset <= 0) {
-          start = i;
-          consumed = -remainingOffset;
-        }
-        continue;
-      }
-      if (consumed + h > visibleHeight) {
-        end = i + 1;
-        break;
-      }
-      consumed += h;
-      start = i;
+  // Build a window of visible messages based on estimated heights.
+  // scrollOffset semantics: 0 = at the newest (bottom); >0 = shifted up.
+  const { visibleMessages, startIndex } = useMemo(() => {
+    if (messages.length === 0) {
+      return { visibleMessages: [] as UIMessage[], startIndex: 0 };
     }
-    if (end === 0) end = messages.length;
-    return {
-      visibleMessages: messages.slice(start, end),
-      startIndex: start,
-      endIndex: end,
-    };
+    const termWidth = process.stdout.columns ?? 80;
+    const heights = messages.map((m) => estimateMessageHeight(m, termWidth));
+
+    // 1) Base window: fill from the bottom (newest) upward until visibleHeight rows.
+    let top = messages.length; // index of first visible message
+    let filled = 0;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (filled + heights[i] > visibleHeight) break;
+      filled += heights[i];
+      top = i;
+    }
+    // Even if the newest message alone is taller than the view, show it.
+    if (top === messages.length) top = messages.length - 1;
+
+    // 2) Apply scroll: move the window up by scrollOffset rows (by height).
+    let remaining = scrollOffset;
+    while (remaining > 0 && top > 0) {
+      remaining -= heights[top - 1];
+      top--;
+    }
+
+    // 3) Re-fill the window downward from the new top.
+    let bottom = top;
+    let used = 0;
+    for (let i = top; i < messages.length; i++) {
+      if (used + heights[i] > visibleHeight) break;
+      used += heights[i];
+      bottom = i + 1;
+    }
+    if (bottom <= top) bottom = top + 1; // at least one message
+
+    return { visibleMessages: messages.slice(top, bottom), startIndex: top };
   }, [messages, scrollOffset, visibleHeight]);
 
   return (

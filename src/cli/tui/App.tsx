@@ -10,13 +10,13 @@
  *   import { inkAsk } from "./cli/tui/ask.js";
  *   const runtime = new DeeptutorRuntime(config, session, inkAsk);
  */
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Box, Text, useInput, useApp, useWindowSize } from "ink";
 import { basename } from "node:path";
 import type { DeeptutorRuntime } from "../../agent/harness.js";
 import type { JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import type { UIMessage, AppMode } from "./types.js";
-import { MessageList } from "./MessageList.js";
+import { MessageList, estimateMessageHeight } from "./MessageList.js";
 import { CommandMenu } from "./CommandMenu.js";
 import { TextInput } from "./TextInput.js";
 import { StatusBar } from "./StatusBar.js";
@@ -67,7 +67,27 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   const [menuIndex, setMenuIndex] = useState(0);
   const [menuVisible, setMenuVisible] = useState(false);
 
+  // Mirror of mode.type for the raw-stdin wheel handler (avoids stale closures)
+  const modeRef = useRef(mode.type);
+  modeRef.current = mode.type;
+
   const visibleHeight = Math.max(rows - 4, 5); // rows - input(3) - status(1)
+
+  // Total estimated scrollable height and the clamp ceiling for scrollOffset
+  const totalHeight = useMemo(() => {
+    const termWidth = process.stdout.columns ?? 80;
+    return messages.reduce(
+      (acc, m) => acc + estimateMessageHeight(m, termWidth),
+      0
+    );
+  }, [messages]);
+
+  const maxScroll = Math.max(0, totalHeight - visibleHeight);
+
+  const clampScroll = useCallback(
+    (v: number) => Math.max(0, Math.min(v, maxScroll)),
+    [maxScroll]
+  );
 
   // Load session path on mount / runtime change
   useEffect(() => {
@@ -205,13 +225,48 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   useInput(
     (input, key) => {
       if (key.pageUp) {
-        setScrollOffset((prev) => prev + 5);
+        setScrollOffset((prev) => clampScroll(prev + 5));
       } else if (key.pageDown) {
-        setScrollOffset((prev) => Math.max(0, prev - 5));
+        setScrollOffset((prev) => clampScroll(prev - 5));
       }
     },
     { isActive: mode.type === "chat" && !isProcessing }
   );
+
+  // Mouse wheel scrolling (SGR extended mode, xterm 1000+1006).
+  // Enables tracking on mount and restores the terminal on unmount.
+  useEffect(() => {
+    if (!process.stdout.isTTY) return;
+    process.stdout.write("\x1b[?1000h\x1b[?1006h");
+    return () => {
+      process.stdout.write("\x1b[?1000l\x1b[?1006l");
+    };
+  }, []);
+
+  // Consume wheel events from stdin directly; coexists with ink's own
+  // 'readable' listener (Node delivers to both).
+  useEffect(() => {
+    const handler = (chunk: string | Buffer) => {
+      if (modeRef.current !== "chat") return;
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      const re = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text)) !== null) {
+        const btn = Number(m[1]);
+        if (btn === 64) {
+          // wheel up → scroll toward older messages
+          setScrollOffset((prev) => clampScroll(prev + 3));
+        } else if (btn === 65) {
+          // wheel down → scroll toward newest
+          setScrollOffset((prev) => clampScroll(prev - 3));
+        }
+      }
+    };
+    process.stdin.on("data", handler);
+    return () => {
+      process.stdin.removeListener("data", handler);
+    };
+  }, [clampScroll]);
 
   // Global Ctrl+C exit
   useInput((input, key) => {
@@ -826,9 +881,14 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
               <TextInput
                 value={input}
                 onChange={(v) => {
-                  setInput(v);
+                  // ink's useInput dispatch forwards parsed-but-unrecognized
+                  // control sequences (e.g. SGR mouse "\x1b[<64;10;20M") as
+                  // their payload ("[<64;10;20M"); strip it so wheel events
+                  // never corrupt the input value.
+                  const clean = v.replace(/\[<\d+(;\d+)*[Mm]$/g, "");
+                  setInput(clean);
                   setMenuIndex(0);
-                  setMenuVisible(v.startsWith("/"));
+                  setMenuVisible(clean.startsWith("/"));
                 }}
                 onSubmit={handleSubmit}
                 placeholder="Ask about your knowledge base… (/help)"
