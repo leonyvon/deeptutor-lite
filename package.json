@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "dev": "node --experimental-strip-types src/index.ts",
+    "dev": "tsx src/index.ts",
     "test": "vitest run"
   },
   "engines": {
@@ -43,6 +43,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.0.0",
+    "tsx": "^4.23.7",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
   },
