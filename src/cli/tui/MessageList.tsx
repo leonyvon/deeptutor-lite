@@ -23,7 +23,7 @@ export function MessageList({ messages }: MessageListProps): React.ReactElement 
           {msg.type === "assistant" && (
             <Box flexDirection="column">
               <Text bold color={msg.isError ? "red" : "white"}>
-                {msg.isError ? "Error" : "Assistant"}
+                {msg.isError ? "Error" : "tutor"}
               </Text>
               <Text color={msg.isError ? "red" : msg.streaming ? undefined : "gray"}>
                 {msg.text}
