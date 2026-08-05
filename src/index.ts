@@ -2,9 +2,10 @@
 /**
  * deeptutor — standalone CLI entry point.
  *
- * Loads config, creates/opens the session, assembles the DeeptutorRuntime
- * (with the TUI ask callback for interactive quiz choices), and renders the
- * ink TUI.
+ * Loads config, assembles the DeeptutorRuntime (with the TUI ask callback
+ * for interactive quiz choices), and renders the ink TUI. No session is
+ * created at startup: the TUI lazily creates one on the first user message
+ * (unless --session is given, which resumes/creates eagerly).
  */
 import React from "react";
 import { render } from "ink";
@@ -13,6 +14,7 @@ import { createSessionRepo } from "./session/repo.js";
 import { DeeptutorRuntime } from "./agent/harness.js";
 import { App } from "./cli/tui/index.js";
 import { inkAsk } from "./cli/tui/ask.js";
+import type { Session, JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
 
 function parseArgs(argv: string[]): { sessionId?: string; help?: boolean } {
   const out: { sessionId?: string; help?: boolean } = {};
@@ -40,11 +42,11 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const repo = createSessionRepo(config.session.dir);
 
-  let session;
+  // Lazy session: only create one eagerly when an explicit id is requested.
+  // Otherwise the TUI calls runtime.ensureSession() on the first message.
+  let session: Session<JsonlSessionMetadata> | null = null;
   if (args.sessionId) {
     session = await repo.create({ id: args.sessionId, cwd: process.cwd() });
-  } else {
-    session = await repo.create({ cwd: process.cwd() });
   }
 
   // Inject the TUI ask callback so tools (mastery_quiz etc.) can present

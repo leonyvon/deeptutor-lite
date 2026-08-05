@@ -50,6 +50,10 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
 // Derived in insertion order (keeps existing SLASH_COMMANDS references working)
 const SLASH_COMMANDS = Object.keys(COMMAND_DESCRIPTIONS);
 
+// Spinner frames for the "thinking…" animation shown while processing
+// (before the first streaming text_delta arrives).
+const THINKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 export interface AppProps {
   runtime: DeeptutorRuntime;
   repo?: JsonlSessionRepo;
@@ -66,6 +70,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   const [scrollOffset, setScrollOffset] = useState(0);
   const [menuIndex, setMenuIndex] = useState(0);
   const [menuVisible, setMenuVisible] = useState(false);
+  const [thinkingTick, setThinkingTick] = useState(0);
 
   // Mirror of mode.type for the raw-stdin wheel handler (avoids stale closures)
   const modeRef = useRef(mode.type);
@@ -91,15 +96,21 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
 
   // Load session path on mount / runtime change
   useEffect(() => {
+    if (!runtime.session) return;
     runtime.session
       .getMetadata()
       .then((m) => setSessionPath(m.path))
       .catch(() => {});
-  }, [runtime]);
+  }, [runtime.session]);
 
-  // Subscribe to harness events for streaming UI updates
+  // Subscribe to harness events for streaming UI updates.
+  // Depends on runtime.harness: setSession/ensureSession replace the harness
+  // instance, and a stale subscription would freeze isProcessing forever
+  // (events from the new harness would never reach the UI).
   useEffect(() => {
-    const unsub = runtime.harness.subscribe((event) => {
+    const harness = runtime.harness;
+    if (!harness) return;
+    const unsub = harness.subscribe((event) => {
       if (event.type === "message_update") {
         if (event.assistantMessageEvent.type === "text_delta") {
           const delta = event.assistantMessageEvent.delta;
@@ -203,7 +214,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
       }
     });
     return unsub;
-  }, [runtime]);
+  }, [runtime.harness]);
 
   // Subscribe to interactive ask requests from tools
   useEffect(() => {
@@ -283,6 +294,20 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     // For now, keep it simple: only auto-follow when at bottom.
   }, [messages, scrollOffset]);
 
+  // True while the harness is emitting a streaming assistant response.
+  const lastMsg = messages[messages.length - 1];
+  const streamingInProgress =
+    !!lastMsg && lastMsg.type === "assistant" && lastMsg.streaming === true;
+
+  // "thinking…" spinner while processing but before streaming output starts
+  // (model reasoning phase can take several seconds).
+  useEffect(() => {
+    if (isProcessing && !streamingInProgress) {
+      const t = setInterval(() => setThinkingTick((v) => v + 1), 100);
+      return () => clearInterval(t);
+    }
+  }, [isProcessing, streamingInProgress]);
+
   // Slash command dropdown palette state
   const menuOpen =
     mode.type === "chat" && input.trim().startsWith("/") && menuVisible;
@@ -335,6 +360,41 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     },
     { isActive: menuOpen }
   );
+
+  // Lazy session creation: the first user message (or skill run) creates the
+  // session if none exists. Returns false on failure (error message pushed).
+  const ensureSessionReady = useCallback(async (): Promise<boolean> => {
+    if (runtime.session) return true;
+    if (!repo) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          type: "assistant",
+          text: "Error: no session repo available",
+          streaming: false,
+          id: nextId(),
+        },
+      ]);
+      return false;
+    }
+    try {
+      const s = await runtime.ensureSession(repo);
+      const meta = await s.getMetadata();
+      setSessionPath(meta.path);
+      return true;
+    } catch (err: any) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          type: "assistant",
+          text: `Error: ${err?.message ?? String(err)}`,
+          streaming: false,
+          id: nextId(),
+        },
+      ]);
+      return false;
+    }
+  }, [runtime, repo]);
 
   const handleSubmit = useCallback(
     async (value: string) => {
@@ -583,13 +643,17 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
         if (skillMap[cmd]) {
           const skill = skillMap[cmd];
           const instructions = arg ? `User instructions: ${arg}` : undefined;
+          const ready = await ensureSessionReady();
+          if (!ready) return;
+          const harness = runtime.harness;
+          if (!harness) return;
           setMessages((prev) => [
             ...prev,
             { type: "user", text: line, id: nextId() },
           ]);
           setIsProcessing(true);
           try {
-            await runtime.harness.skill(skill, instructions);
+            await harness.skill(skill, instructions);
           } catch (err: any) {
             setMessages((prev) => [
               ...prev,
@@ -618,13 +682,17 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
       }
 
       // Regular chat message
+      const ready = await ensureSessionReady();
+      if (!ready) return;
+      const harness = runtime.harness;
+      if (!harness) return;
       setMessages((prev) => [
         ...prev,
         { type: "user", text: line, id: nextId() },
       ]);
       setIsProcessing(true);
       try {
-        await runtime.harness.prompt(line);
+        await harness.prompt(line);
       } catch (err: any) {
         setMessages((prev) => [
           ...prev,
@@ -638,7 +706,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
         setIsProcessing(false);
       }
     },
-    [runtime, exit, repo, sessionPath, menuOpen, menuCommands, menuIndex]
+    [runtime, exit, repo, sessionPath, menuOpen, menuCommands, menuIndex, ensureSessionReady]
   );
 
   // Scroll info text for status bar
@@ -663,6 +731,16 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             scrollOffset={scrollOffset}
             visibleHeight={visibleHeight}
           />
+          {mode.type === "chat" &&
+            isProcessing &&
+            !streamingInProgress && (
+              <Box marginTop={1} flexShrink={0}>
+                <Text color="cyan" dimColor>
+                  {THINKING_FRAMES[thinkingTick % THINKING_FRAMES.length]}{" "}
+                  thinking…
+                </Text>
+              </Box>
+            )}
           {mode.type === "ask" && (
             <AskPicker
               question={mode.question}

@@ -16,7 +16,7 @@ import type { MutableModels } from "@earendil-works/pi-ai";
 import type { Model } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import type { Session, JsonlSessionMetadata, AgentHarnessTool } from "@earendil-works/pi-agent-core";
+import type { Session, JsonlSessionMetadata, JsonlSessionRepo, AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import type { Config, SearchConfig, ToolContext } from "../types.js";
 import { saveConfig } from "../config.js";
 import { FileCredentialStore } from "../auth-store.js";
@@ -110,12 +110,12 @@ export function buildTools(config: Config): AgentHarnessTool<ToolContext>[] {
 export class DeeptutorRuntime {
   readonly config: Config;
   readonly models: MutableModels;
-  readonly session: Session<JsonlSessionMetadata>;
-  harness: AgentHarness<ToolContext>;
+  session: Session<JsonlSessionMetadata> | null;
+  harness: AgentHarness<ToolContext> | null;
   private readonly ask?: ToolContext["ask"];
   private readonly credentials: FileCredentialStore;
 
-  constructor(config: Config, session: Session<JsonlSessionMetadata>, ask?: ToolContext["ask"]) {
+  constructor(config: Config, session: Session<JsonlSessionMetadata> | null, ask?: ToolContext["ask"]) {
     this.config = config;
     this.session = session;
     this.ask = ask;
@@ -128,14 +128,20 @@ export class DeeptutorRuntime {
         this.models.setProvider(provider);
       }
     }
-    this.harness = this.buildHarness();
+    // No session → no harness yet. The TUI lazily creates the session on the
+    // first user message (via ensureSession) and builds the harness then.
+    this.harness = session ? this.buildHarness() : null;
   }
 
   private buildHarness(): AgentHarness<ToolContext> {
+    const session = this.session;
+    if (!session) {
+      throw new Error("Cannot build harness without a session");
+    }
     const model = this.resolveModel(this.config.model.provider ?? "openai-compat", this.config.model.model);
     const toolContext: ToolContext = this.ask ? { ask: this.ask } : {};
     return new AgentHarness({
-      session: this.session,
+      session,
       models: this.models,
       tools: buildTools(this.config),
       resources: {
@@ -229,7 +235,11 @@ export class DeeptutorRuntime {
       }
     }
     const model = this.resolveModel(cfg.provider, cfg.model);
-    await this.harness.setModel(model);
+    // No harness yet (lazy session): the switch still persists and will be
+    // applied by buildHarness when the session is created.
+    if (this.harness) {
+      await this.harness.setModel(model);
+    }
     saveConfig(this.config);
     return model;
   }
@@ -271,22 +281,50 @@ export class DeeptutorRuntime {
   /** Update Brave search config live (rebuilds the web_search tool). */
   async updateSearch(patch: Partial<SearchConfig>): Promise<void> {
     Object.assign(this.config.search, patch);
-    const tools = buildTools(this.config);
-    await this.harness.setTools(tools);
+    if (this.harness) {
+      const tools = buildTools(this.config);
+      await this.harness.setTools(tools);
+    }
     saveConfig(this.config);
   }
 
   /** Swap to another session (new harness on the same models collection). */
   async setSession(session: Session<JsonlSessionMetadata>): Promise<void> {
-    (this as { session: Session<JsonlSessionMetadata> }).session = session;
+    this.session = session;
     this.harness = this.buildHarness();
+  }
+
+  /**
+   * Lazily create the session on the first user message: startup creates
+   * nothing, so launching the TUI never leaves behind empty session files.
+   * Builds the harness the first time a session exists.
+   */
+  async ensureSession(repo: JsonlSessionRepo): Promise<Session<JsonlSessionMetadata>> {
+    if (!this.session) {
+      const s = await repo.create({ cwd: process.cwd() });
+      this.session = s;
+      this.harness = this.buildHarness();
+    }
+    return this.session;
   }
 
   /** Current model descriptor (for the status bar). */
   currentModel(): ModelChoice {
     const c = this.config.model;
-    const m = this.harness.getModel();
     const provider = this.models.getProvider(c.provider ?? PROVIDER_ID);
+    const harness = this.harness;
+    if (!harness) {
+      // No session yet: report the configured model without a live harness.
+      return {
+        providerId: c.provider ?? PROVIDER_ID,
+        providerName: provider?.name ?? "OpenAI Compatible",
+        modelId: c.model,
+        modelName: c.model,
+        baseUrl: c.baseUrl,
+        reasoning: false,
+      };
+    }
+    const m = harness.getModel();
     return {
       providerId: c.provider ?? PROVIDER_ID,
       providerName: provider?.name ?? "OpenAI Compatible",
