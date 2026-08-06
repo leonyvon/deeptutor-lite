@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { Box, Text, useInput } from "ink";
 import type { DeeptutorRuntime, ModelChoice } from "../../agent/harness.js";
-import { TextInput } from "./TextInput.js";
+import { TextInput, flatPartsText } from "./TextInput.js";
 import { theme } from "./theme.js";
 
 const OPENAI_COMPAT_ID = "openai-compat";
@@ -215,8 +215,8 @@ export function ModelPicker({
             <Box marginBottom={1}>
               <Text color={theme.textMuted}>Search: </Text>
               <TextInput
-                value={searchQuery}
-                onChange={onChangeSearchQuery}
+                parts={[{ kind: "text", text: searchQuery }]}
+                onChange={(parts) => onChangeSearchQuery(flatPartsText(parts))}
                 onSubmit={() => {}}
                 placeholder="filter providers..."
                 focus={true}
@@ -263,9 +263,9 @@ export function ModelPicker({
             <Text color={theme.textMuted}>(saved to ~/.deeptutor/auth.json)</Text>
             <Box marginTop={1}>
               <TextInput
-                value={apiKeyValue}
-                onChange={onChangeApiKeyValue}
-                onSubmit={() => onSubmitApiKey(apiKeyValue)}
+                parts={[{ kind: "text", text: apiKeyValue }]}
+                onChange={(parts) => onChangeApiKeyValue(flatPartsText(parts))}
+                onSubmit={(text) => onSubmitApiKey(text)}
                 placeholder="sk-..."
                 focus={true}
                 mask="•"
@@ -286,8 +286,8 @@ export function ModelPicker({
             <Box marginBottom={1}>
               <Text color={theme.textMuted}>Search: </Text>
               <TextInput
-                value={searchQuery}
-                onChange={onChangeSearchQuery}
+                parts={[{ kind: "text", text: searchQuery }]}
+                onChange={(parts) => onChangeSearchQuery(flatPartsText(parts))}
                 onSubmit={() => {}}
                 placeholder="filter models..."
                 focus={true}

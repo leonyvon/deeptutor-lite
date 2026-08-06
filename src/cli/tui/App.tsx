@@ -21,7 +21,8 @@ import { MessageList, totalBufferLines, countDisplayLines, extractSelectionText 
 import type { ScreenSelection } from "./MessageList.js";
 import { parseSgrMouse } from "./mouse.js";
 import { CommandMenu } from "./CommandMenu.js";
-import { TextInput } from "./TextInput.js";
+import { TextInput, flatPartsText } from "./TextInput.js";
+import type { InputPart } from "./TextInput.js";
 import { StatusBar } from "./StatusBar.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { BraveConfig } from "./BraveConfig.js";
@@ -74,7 +75,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { rows } = useWindowSize();
   const [messages, setMessages] = useState<UIMessage[]>([]);
-  const [input, setInput] = useState("");
+  // Input content as a sequence of parts (text segments + multi-line paste
+  // blocks as placeholders inside the input flow).
+  const [input, setInput] = useState<InputPart[]>([]);
   const [mode, setMode] = useState<AppMode>({ type: "chat" });
   const [isProcessing, setIsProcessing] = useState(false);
   const [sessionPath, setSessionPath] = useState("");
@@ -91,15 +94,6 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   // copied to the clipboard and the selection is cleared.
   const [selection, setSelection] = useState<ScreenSelection | null>(null);
   const [mouseDown, setMouseDown] = useState(false);
-
-  // Multi-line paste blocks (opencode-style): pasted text with newlines is
-  // shown as filled "pasted ~N lines" rows INSIDE the input box instead of
-  // being inserted into the input value (avoids multi-line caret rendering
-  // issues). Multiple blocks can accumulate; Backspace removes the last one
-  // once the typed input is empty. Submit sends all blocks + typed text.
-  const [pasted, setPasted] = useState<
-    { id: string; text: string; lines: number }[]
-  >([]);
 
   // Streaming delta batching: accumulate text_delta events and flush them at
   // most every STREAM_FLUSH_MS, coalescing several tokens per setState. This
@@ -147,17 +141,23 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   const termWidth = process.stdout.columns ?? 80;
 
   // Input box height grows with the wrapped input (1 top border + content
-  // lines + 1 bottom row). Width available to TextInput = term width - "> "
-  // prefix (2) - paddingX 1×2 (2).
+  // lines + 1 bottom row). Width available to TextInput = term width - prompt
+  // prefix (2) - paddingX 1×2 (2). Text parts wrap at that width; multi-line
+  // paste blocks each count as one row inside the input box.
   const inputLines = Math.max(
     1,
-    countDisplayLines(input || PLACEHOLDER_TEXT, Math.max(termWidth - 4, 10))
+    input.length === 0
+      ? countDisplayLines(PLACEHOLDER_TEXT, Math.max(termWidth - 4, 10))
+      : input.reduce(
+          (acc, p) =>
+            acc +
+            (p.kind === "text"
+              ? countDisplayLines(p.text || "", Math.max(termWidth - 4, 10))
+              : 1),
+          0
+        )
   );
-  // Multi-line paste blocks each take one row inside the input box.
-  const inputAreaHeight = Math.min(
-    MAX_INPUT_LINES,
-    2 + inputLines + pasted.length
-  );
+  const inputAreaHeight = Math.min(MAX_INPUT_LINES, 2 + inputLines);
 
   const visibleHeight = Math.max(rows - inputAreaHeight - 2, 5); // rows - input area - status(2 rows)
 
@@ -332,13 +332,12 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     { isActive: mode.type === "chat" && !isProcessing }
   );
 
-  // Ctrl+C: clear the input box (and any pasted blocks) when it has content;
-  // exit only when empty (and not inside a picker/menu).
+  // Ctrl+C: clear the input box when it has content; exit only when empty
+  // (and not inside a picker/menu).
   useInput((char, key) => {
     if (key.ctrl && char === "c") {
-      if (mode.type === "chat" && (input.length > 0 || pasted.length > 0)) {
-        setInput("");
-        setPasted([]);
+      if (mode.type === "chat" && input.length > 0) {
+        setInput([]);
         setMenuVisible(false);
         setMenuIndex(0);
       } else {
@@ -449,10 +448,12 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
 
   // Slash command dropdown palette state
   const menuOpen =
-    mode.type === "chat" && input.trim().startsWith("/") && menuVisible;
+    mode.type === "chat" &&
+    flatPartsText(input).trim().startsWith("/") &&
+    menuVisible;
 
   const menuCommands = useMemo(() => {
-    const q = input.trim().toLowerCase();
+    const q = flatPartsText(input).trim().toLowerCase();
     return SLASH_COMMANDS.filter((c) =>
       c.toLowerCase().startsWith(q)
     ).map((name) => ({ name, desc: COMMAND_DESCRIPTIONS[name] ?? "" }));
@@ -486,13 +487,13 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
       } else if (key.tab) {
         const cmd = menuCommands[menuIndex];
         if (cmd) {
-          setInput(cmd.name);
+          setInput([{ kind: "text", text: cmd.name }]);
           setMenuIndex(0);
           setMenuVisible(true);
         }
       } else if (key.escape) {
-        if (input.trim() === "/") {
-          setInput("");
+        if (flatPartsText(input).trim() === "/") {
+          setInput([]);
         }
         setMenuVisible(false);
       }
@@ -537,13 +538,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
 
   const handleSubmit = useCallback(
     async (value: string) => {
-      // Multi-line paste blocks (if any) are joined and prepended to the
-      // typed input.
+      // `value` is already the merged full text (paste blocks included) that
+      // TextInput produced via mergeParts.
       let line = value.trim();
-      if (pasted.length > 0) {
-        const blocks = pasted.map((p) => p.text).join("\n");
-        line = blocks + (line ? "\n" + line : "");
-      }
       // Menu open + valid highlight → run the highlighted command instead of
       // the raw input (opencode palette behavior).
       if (
@@ -555,8 +552,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
         line = menuCommands[menuIndex].name;
       }
       if (!line) return;
-      setInput("");
-      setPasted([]);
+      setInput([]);
 
       if (line.startsWith("/")) {
         const [cmd, ...rest] = line.split(/\s+/);
@@ -1084,37 +1080,20 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             backgroundColor={theme.panel}
             paddingX={1}
           >
-            {pasted.map((p) => (
-              <Box key={p.id} flexShrink={0} backgroundColor={theme.panel} paddingX={1}>
-                <Text color={theme.accent} bold>
-                  pasted ~{p.lines} lines
-                </Text>
-              </Box>
-            ))}
             <Box flexDirection="row">
               <Text color={theme.primary}>{isProcessing ? "⋯ " : "❯ "}</Text>
               <TextInput
-                value={input}
-                onChange={(v) => {
-                  setInput(v);
+                parts={input}
+                onChange={(parts) => {
+                  setInput(parts);
                   setMenuIndex(0);
-                  setMenuVisible(v.startsWith("/"));
+                  setMenuVisible(flatPartsText(parts).startsWith("/"));
                 }}
                 onSubmit={handleSubmit}
                 placeholder={PLACEHOLDER_TEXT}
                 focus={!isProcessing}
                 blinkPaused={mouseDown}
                 menuOpen={menuOpen}
-                onMultiLinePaste={(text) =>
-                  setPasted((prev) => [
-                    ...prev,
-                    { id: nextId(), text, lines: text.split("\n").length },
-                  ])
-                }
-                pastedCount={pasted.length}
-                onRemovePaste={() =>
-                  setPasted((prev) => prev.slice(0, -1))
-                }
                 // Anchor the hardware cursor inside the input box so the
                 // Windows Terminal IME composition window (pinyin pre-edit)
                 // follows the caret instead of the last written row.
