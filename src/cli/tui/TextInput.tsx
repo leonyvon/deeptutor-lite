@@ -127,31 +127,59 @@ export function buildLines(parts: InputPart[], width: number): Segment[][] {
       return;
     }
     let off = 0;
-    let text = p.text;
-    while (text.length > 0) {
-      const avail = width - curW;
-      if (avail <= 0) {
-        flush();
+    let head = "";
+    let headW = 0;
+    for (const ch of p.text) {
+      if (ch === "\n") {
+        // HARD break: emit the pending head, then close the current line even
+        // if empty (matches wrapToLines: a newline always terminates a row, so
+        // "a\n" is two rows — "a" plus an empty row).
+        if (head !== "") {
+          cur.push({
+            kind: "text",
+            text: head,
+            pi,
+            offStart: off - head.length,
+            offEnd: off,
+          });
+          curW += headW;
+          head = "";
+          headW = 0;
+        }
+        lines.push(cur);
+        cur = [];
+        curW = 0;
+        off++; // "\n" consumes one char offset (caret can sit on either side)
+        // Zero-width anchor on the new row so the caret can sit on an empty
+        // line (e.g. a trailing newline); renders as nothing.
+        cur.push({ kind: "text", text: "", pi, offStart: off, offEnd: off });
         continue;
       }
-      let head = "";
-      let w = 0;
-      for (const ch of text) {
-        const cw = displayWidth(ch);
-        if (w + cw > avail) break;
-        head += ch;
-        w += cw;
-      }
-      if (head === "") {
-        // Single char wider than `avail` — force it onto a fresh line.
+      const cw = displayWidth(ch);
+      if (curW + headW + cw > width && (head !== "" || cur.length > 0)) {
+        // SOFT width wrap: emit the head and close the line, then continue
+        // on a fresh row with this char.
+        if (head !== "") {
+          cur.push({
+            kind: "text",
+            text: head,
+            pi,
+            offStart: off - head.length,
+            offEnd: off,
+          });
+          curW += headW;
+          head = "";
+          headW = 0;
+        }
         flush();
-        continue;
       }
-      cur.push({ kind: "text", text: head, pi, offStart: off, offEnd: off + head.length });
-      off += head.length;
-      curW += w;
-      text = text.slice(head.length);
-      if (text.length > 0) flush();
+      head += ch;
+      headW += cw;
+      off++;
+    }
+    if (head !== "") {
+      cur.push({ kind: "text", text: head, pi, offStart: off - head.length, offEnd: off });
+      curW += headW;
     }
   });
 
@@ -582,7 +610,10 @@ export function TextInput({
         <Text color={theme.textMuted}>{placeholder ?? ""}</Text>
       ) : (
         lines.map((line, r) => (
-          <Box key={r} flexDirection="row" flexShrink={0}>
+          // height={1} guarantees every buildLines row (including empty rows
+          // produced by hard newlines) occupies exactly one terminal line, so
+          // the rendered height always matches estimateInputLines.
+          <Box key={r} flexDirection="row" flexShrink={0} height={1}>
             {line.map((seg) => {
               if (seg.kind === "block") {
                 // Filled rectangle placeholder (opencode style): warning
@@ -620,7 +651,9 @@ export function TextInput({
               // Masked fields (e.g. API keys) render bullets while the caret
               // and editing still operate on the real text (same char count).
               const displayText = mask ? mask.repeat(seg.text.length) : seg.text;
-              const segKey = `${seg.pi}:${seg.offStart}`;
+              // Unique per line: includes offEnd so the zero-width anchor
+              // (offStart == offEnd) never collides with the following segment.
+              const segKey = `${seg.pi}:${seg.offStart}:${seg.offEnd}`;
               if (hasCaret) {
                 const local = caret.off - seg.offStart;
                 if (!focus) {
