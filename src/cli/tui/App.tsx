@@ -17,11 +17,11 @@ import { basename } from "node:path";
 import type { DeeptutorRuntime } from "../../agent/harness.js";
 import type { JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import type { UIMessage, AppMode } from "./types.js";
-import { MessageList, totalBufferLines, countDisplayLines, extractSelectionText } from "./MessageList.js";
+import { MessageList, totalBufferLines, extractSelectionText } from "./MessageList.js";
 import type { ScreenSelection } from "./MessageList.js";
 import { parseSgrMouse } from "./mouse.js";
 import { CommandMenu } from "./CommandMenu.js";
-import { TextInput, flatPartsText } from "./TextInput.js";
+import { TextInput, flatPartsText, estimateInputLines } from "./TextInput.js";
 import type { InputPart } from "./TextInput.js";
 import { StatusBar } from "./StatusBar.js";
 import { ModelPicker } from "./ModelPicker.js";
@@ -142,20 +142,12 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
 
   // Input box height grows with the wrapped input (1 top border + content
   // lines + 1 bottom row). Width available to TextInput = term width - prompt
-  // prefix (2) - paddingX 1×2 (2). Text parts wrap at that width; multi-line
-  // paste blocks each count as one row inside the input box.
+  // prefix (2) - paddingX 1×2 (2). estimateInputLines uses the exact same
+  // segment packer as the renderer (paste blocks are inline tokens), so the
+  // box height always matches the rendered row count.
   const inputLines = Math.max(
     1,
-    input.length === 0
-      ? countDisplayLines(PLACEHOLDER_TEXT, Math.max(termWidth - 4, 10))
-      : input.reduce(
-          (acc, p) =>
-            acc +
-            (p.kind === "text"
-              ? countDisplayLines(p.text || "", Math.max(termWidth - 4, 10))
-              : 1),
-          0
-        )
+    estimateInputLines(input, Math.max(termWidth - 4, 10))
   );
   const inputAreaHeight = Math.min(MAX_INPUT_LINES, 2 + inputLines);
 

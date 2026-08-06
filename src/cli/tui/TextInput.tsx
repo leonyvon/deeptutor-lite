@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Box, Text, useInput, useStdout, usePaste } from "ink";
 import { theme } from "./theme.js";
-import { displayWidth, wrapToLines } from "./MessageList.js";
+import { displayWidth } from "./MessageList.js";
 
 /**
  * Input content model: the input box is a SEQUENCE of parts — plain text
@@ -46,6 +46,122 @@ export function mergeParts(parts: InputPart[]): string {
 /** Flat text of a parts list (block content included, without separators). */
 export function flatPartsText(parts: InputPart[]): string {
   return parts.map((p) => p.text).join("");
+}
+
+// ---------------------------------------------------------------------------
+// Inline segment model (opencode-style): a paste block is an atomic, inline
+// token inside the text flow (a filled rectangle), not a standalone row.
+// ---------------------------------------------------------------------------
+
+/** A run of plain text from one part, with its char-offset range. */
+export interface SegText {
+  kind: "text";
+  text: string;
+  pi: number;
+  offStart: number;
+  offEnd: number;
+}
+/** A paste-block placeholder rendered as a background-filled rectangle. */
+export interface SegBlock {
+  kind: "block";
+  pi: number;
+  id: string;
+  label: string;
+  /** displayWidth of `label` (before padding). */
+  width: number;
+}
+export type Segment = SegText | SegBlock;
+
+/** UI label for a paste block (keeps the line count). */
+function blockLabel(lineCount: number): string {
+  return `[已粘贴 ${lineCount} 行]`;
+}
+
+/** Rendered width of a segment in terminal columns (blocks include paddingX 1×2). */
+function segWidth(seg: Segment): number {
+  return seg.kind === "text" ? displayWidth(seg.text) : seg.width + 2;
+}
+
+/**
+ * Pack parts into terminal lines of at most `width` columns — the single
+ * source of truth for BOTH rendering and estimateInputLines (so the input-box
+ * height never jitters). Text parts wrap char-by-char (CJK display width);
+ * blocks are atomic tokens that fit on the current line or wrap to the next.
+ * Text segments carry the part char-offset range so the {pi, off} caret maps
+ * to an exact row/column; a block occupies one off unit ({0,1}).
+ */
+export function buildLines(parts: InputPart[], width: number): Segment[][] {
+  const lines: Segment[][] = [];
+  let cur: Segment[] = [];
+  let curW = 0;
+
+  const flush = () => {
+    if (cur.length > 0) lines.push(cur);
+    cur = [];
+    curW = 0;
+  };
+
+  parts.forEach((p, pi) => {
+    if (p.kind === "block") {
+      let label = blockLabel(p.lines);
+      // Ultra-narrow terminal fallback (real terminals are wider). The block
+      // must fit its label + 2 padding columns on a fresh line.
+      if (displayWidth(label) + 2 > width) label = `[${p.lines}]`;
+      const seg: SegBlock = {
+        kind: "block",
+        pi,
+        id: p.id,
+        label,
+        width: displayWidth(label),
+      };
+      const w = segWidth(seg); // rendered width incl. paddingX 1×2
+      if (curW + w > width && cur.length > 0) flush();
+      cur.push(seg);
+      curW += w;
+      return;
+    }
+    // text part
+    if (p.text === "") {
+      // Zero-width anchor so the caret can still sit on this (empty) part.
+      cur.push({ kind: "text", text: "", pi, offStart: 0, offEnd: 0 });
+      return;
+    }
+    let off = 0;
+    let text = p.text;
+    while (text.length > 0) {
+      const avail = width - curW;
+      if (avail <= 0) {
+        flush();
+        continue;
+      }
+      let head = "";
+      let w = 0;
+      for (const ch of text) {
+        const cw = displayWidth(ch);
+        if (w + cw > avail) break;
+        head += ch;
+        w += cw;
+      }
+      if (head === "") {
+        // Single char wider than `avail` — force it onto a fresh line.
+        flush();
+        continue;
+      }
+      cur.push({ kind: "text", text: head, pi, offStart: off, offEnd: off + head.length });
+      off += head.length;
+      curW += w;
+      text = text.slice(head.length);
+      if (text.length > 0) flush();
+    }
+  });
+
+  flush();
+  return lines;
+}
+
+/** Exact number of terminal rows the input occupies (blocks are inline). */
+export function estimateInputLines(parts: InputPart[], width: number): number {
+  return buildLines(parts, width).length;
 }
 
 interface TextInputProps {
@@ -124,72 +240,44 @@ export function TextInput({
 
   const contentWidth = Math.max((stdout.columns ?? 80) - 4, 10);
 
-  // ---- Rendering: build the row buffer (text rows + block rows) ----------
-  interface RenderRow {
-    key: string;
-    kind: "text" | "block";
-    text: string; // text row content, or block label
-    pi: number; // originating part index
-    offStart: number; // text row: char offset of first char in part
-    offEnd: number; // text row: char offset after last char
-    blockId?: string;
-  }
-  const rows = useMemo<RenderRow[]>(() => {
-    const out: RenderRow[] = [];
-    parts.forEach((p, pi) => {
-      if (p.kind === "text") {
-        const wrapped = wrapToLines(p.text, contentWidth);
-        let acc = 0;
-        wrapped.forEach((ln, li) => {
-          out.push({
-            key: `t-${pi}-${li}`,
-            kind: "text",
-            text: ln,
-            pi,
-            offStart: acc,
-            offEnd: acc + ln.length,
-          });
-          acc += ln.length;
-        });
-      } else {
-        out.push({
-          key: `b-${p.id}`,
-          kind: "block",
-          text: `pasted ~${p.lines} lines`,
-          pi,
-          offStart: 0,
-          offEnd: 1,
-          blockId: p.id,
-        });
-      }
-    });
-    return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [parts, contentWidth]);
+  // ---- Rendering: build the segment line buffer (inline tokens) ----------
+  const lines = useMemo(() => buildLines(parts, contentWidth), [
+    parts,
+    contentWidth,
+  ]);
 
-  // Caret -> render row index + column within that row.
+  // Caret {pi, off} -> render line index + column within that line. Text
+  // segments map via their char-offset range; a block anchors at its left edge
+  // (off 0) or right edge (off 1, after the label + padding).
   const caretLoc = useMemo(() => {
-    for (let r = 0; r < rows.length; r++) {
-      const row = rows[r];
-      if (row.pi !== caret.pi) continue;
-      if (row.kind === "block") {
-        if (caret.off === 0) return { row: r, col: 0 };
-        // off === 1: after the block — on the next row's start, or this row
-        // if it is the last one.
-        if (r === rows.length - 1) return { row: r, col: displayWidth(row.text) };
-        return { row: r + 1, col: 0 };
-      }
-      if (caret.off <= row.offEnd) {
-        const inRow = Math.max(0, caret.off - row.offStart);
-        return { row: r, col: displayWidth(row.text.slice(0, inRow)) };
+    for (let r = 0; r < lines.length; r++) {
+      let col = 0;
+      for (const seg of lines[r]) {
+        if (seg.pi !== caret.pi) {
+          col += segWidth(seg);
+          continue;
+        }
+        if (seg.kind === "text") {
+          if (caret.off <= seg.offEnd) {
+            const inSeg = Math.max(0, caret.off - seg.offStart);
+            return { row: r, col: col + displayWidth(seg.text.slice(0, inSeg)) };
+          }
+          col += segWidth(seg);
+        } else {
+          // block: off 0 = before, off 1 = after
+          if (caret.off === 0) return { row: r, col };
+          return { row: r, col: col + segWidth(seg) };
+        }
       }
     }
-    // Fallback: end of the last row.
-    const last = rows[rows.length - 1];
-    return last
-      ? { row: rows.length - 1, col: displayWidth(last.text) }
-      : { row: 0, col: 0 };
-  }, [rows, caret]);
+    // Fallback: end of the last line.
+    const last = lines[lines.length - 1];
+    if (last) {
+      const col = last.reduce((a, s) => a + segWidth(s), 0);
+      return { row: lines.length - 1, col };
+    }
+    return { row: 0, col: 0 };
+  }, [lines, caret]);
 
   // ---- Editing helpers -----------------------------------------------------
   const partLen = (p: InputPart): number => (p.kind === "text" ? p.text.length : 1);
@@ -373,30 +461,48 @@ export function TextInput({
     [parts, caret]
   );
 
-  // ↑/↓ move the caret between render rows (skipping over blocks as rows).
+  // ↑/↓ move the caret between render lines. Within a line, the column maps
+  // to the nearest char; block segments clamp to their boundaries (off 0/1),
+  // never entering inside the placeholder.
   const moveLine = useCallback(
     (dir: -1 | 1) => {
       if (menuOpen) return;
       const targetRow = caretLoc.row + dir;
-      if (targetRow < 0 || targetRow >= rows.length) return;
-      const target = rows[targetRow];
+      if (targetRow < 0 || targetRow >= lines.length) return;
+      const target = lines[targetRow];
       const col = caretLoc.col;
-      if (target.kind === "block") {
-        setCaret({ pi: target.pi, off: 0 });
-        return;
+      let acc = 0;
+      for (const seg of target) {
+        const w = segWidth(seg);
+        const inSeg = col < acc + w;
+        if (seg.kind === "block") {
+          if (inSeg) {
+            const after = col >= acc + w / 2;
+            setCaret({ pi: seg.pi, off: after ? 1 : 0 });
+            return;
+          }
+        } else if (inSeg) {
+          const local = Math.max(0, col - acc);
+          let t = 0;
+          let tw = 0;
+          for (const ch of seg.text) {
+            const cw = displayWidth(ch);
+            if (tw + cw > local) break;
+            tw += cw;
+            t++;
+          }
+          setCaret({ pi: seg.pi, off: seg.offStart + t });
+          return;
+        }
+        acc += w;
       }
-      // Locate the char in the target text row closest to `col`.
-      let t = 0;
-      let tw = 0;
-      for (const ch of target.text) {
-        const w = displayWidth(ch);
-        if (tw + w > col) break;
-        tw += w;
-        t++;
+      // col beyond the line content: end of the last segment.
+      const last = target[target.length - 1];
+      if (last) {
+        setCaret({ pi: last.pi, off: last.kind === "text" ? last.offEnd : 1 });
       }
-      setCaret({ pi: target.pi, off: target.offStart + t });
     },
-    [rows, caretLoc, menuOpen]
+    [lines, caretLoc, menuOpen]
   );
 
   // ---- Input events --------------------------------------------------------
@@ -472,62 +578,69 @@ export function TextInput({
   // ---- Render -------------------------------------------------------------
   return (
     <Box flexDirection="column">
-      {rows.length === 0 ? (
+      {lines.length === 0 ? (
         <Text color={theme.textMuted}>{placeholder ?? ""}</Text>
       ) : (
-        rows.map((row, r) => {
-          const isCaretRow = r === caretLoc.row;
-          if (row.kind === "block") {
-            return (
-              <Box key={row.key} flexShrink={0} backgroundColor={theme.panel} paddingX={1}>
-                <Text color={theme.accent} bold>
-                  {isCaretRow && focus && cursorOn ? "▎" : ""}
-                  {row.text}
+        lines.map((line, r) => (
+          <Box key={r} flexDirection="row" flexShrink={0}>
+            {line.map((seg) => {
+              if (seg.kind === "block") {
+                // Filled rectangle placeholder (opencode style): warning
+                // background, dark text, one padding column each side. The
+                // ✏️ caret clamps to the boundary (off 0 = left, off 1 = right).
+                const isCaretHere = r === caretLoc.row && seg.pi === caret.pi;
+                const caretGlyph =
+                  focus && (cursorOn ? (
+                    <Text color={theme.accent}>✏️</Text>
+                  ) : (
+                    <Text>　</Text>
+                  ));
+                return (
+                  <React.Fragment key={seg.id}>
+                    {isCaretHere && caret.off === 0 && focus && caretGlyph}
+                    <Box backgroundColor={theme.warning} paddingX={1}>
+                      <Text color={theme.panel} bold>
+                        {seg.label}
+                      </Text>
+                    </Box>
+                    {isCaretHere && caret.off === 1 && focus && caretGlyph}
+                  </React.Fragment>
+                );
+              }
+              // text segment
+              const isCaretRow = r === caretLoc.row;
+              const hasCaret =
+                isCaretRow &&
+                seg.pi === caret.pi &&
+                caret.off >= seg.offStart &&
+                caret.off <= seg.offEnd;
+              // Masked fields (e.g. API keys) render bullets while the caret
+              // and editing still operate on the real text (same char count).
+              const displayText = mask ? mask.repeat(seg.text.length) : seg.text;
+              const segKey = `${seg.pi}:${seg.offStart}`;
+              if (hasCaret) {
+                const local = caret.off - seg.offStart;
+                return (
+                  <Text key={segKey} wrap="truncate" color={shownText ? undefined : theme.textMuted}>
+                    {displayText.slice(0, local)}
+                    {focus &&
+                      (cursorOn ? (
+                        <Text color={theme.accent}>✏️</Text>
+                      ) : (
+                        <Text>　</Text>
+                      ))}
+                    {displayText.slice(local)}
+                  </Text>
+                );
+              }
+              return (
+                <Text key={segKey} wrap="truncate" color={shownText ? undefined : theme.textMuted}>
+                  {displayText}
                 </Text>
-              </Box>
-            );
-          }
-          const caretCol = isCaretRow ? caretLoc.col : -1;
-          // Column to char offset within the row.
-          let ch = 0;
-          let w = 0;
-          let caretChar = row.text.length;
-          for (let i = 0; i < row.text.length; i++) {
-            const cw = displayWidth(row.text[i]);
-            if (w === caretCol) {
-              caretChar = ch;
-              break;
-            }
-            if (w + cw > caretCol) {
-              caretChar = ch;
-              break;
-            }
-            w += cw;
-            ch++;
-          }
-          if (caretCol < 0) caretChar = -1;
-          // Masked fields (e.g. API keys) render bullets while the caret and
-          // editing still operate on the real text (same char count per row).
-          const displayText = mask ? mask.repeat(row.text.length) : row.text;
-          return (
-            <Text key={row.key} wrap="truncate" color={shownText ? undefined : theme.textMuted}>
-              {caretChar >= 0 ? (
-                <>
-                  {displayText.slice(0, caretChar)}
-                  {focus &&
-                    (cursorOn ? (
-                      <Text color={theme.accent}>✏️</Text>
-                    ) : (
-                      <Text>　</Text>
-                    ))}
-                  {displayText.slice(caretChar)}
-                </>
-              ) : (
-                displayText
-              )}
-            </Text>
-          );
-        })
+              );
+            })}
+          </Box>
+        ))
       )}
     </Box>
   );
