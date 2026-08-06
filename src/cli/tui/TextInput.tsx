@@ -28,6 +28,10 @@ interface TextInputProps {
    * pastes are inserted directly at the caret.
    */
   onMultiLinePaste?: (text: string) => void;
+  /** Number of paste blocks above the input (Backspace removes the last). */
+  pastedCount?: number;
+  /** Remove the last paste block (called when Backspace at value start). */
+  onRemovePaste?: () => void;
 }
 
 export function TextInput({
@@ -42,6 +46,8 @@ export function TextInput({
   blinkPaused = false,
   menuOpen = false,
   onMultiLinePaste,
+  pastedCount = 0,
+  onRemovePaste,
 }: TextInputProps): React.ReactElement {
   const { stdout } = useStdout();
   // Cursor position in characters within `value` (0..value.length).
@@ -228,6 +234,10 @@ export function TextInput({
         if (cursor > 0) {
           onChange(value.slice(0, cursor - 1) + value.slice(cursor));
           setCursor((c) => Math.max(0, c - 1));
+        } else if (pastedCount > 0) {
+          // Caret at the start of the typed value: Backspace removes the
+          // last paste block (opencode-style blocks live above the input).
+          onRemovePaste?.();
         }
       } else if (key.delete) {
         if (cursor < value.length) {
