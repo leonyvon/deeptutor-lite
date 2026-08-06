@@ -42,29 +42,40 @@ export function StatusBar({
   const kb = runtime.config.kb.defaultKB;
 
   return (
-    <Box
-      height={1}
-      flexShrink={0}
-      flexDirection="row"
-      justifyContent="space-between"
-      backgroundColor={theme.panel}
-    >
-      <Box flexDirection="row" gap={1}>
-        <Text bold color={theme.accent} backgroundColor={theme.panel}>
-          [Tutor]
-        </Text>
-        <Text color={theme.textMuted}>@ {model.providerName}</Text>
-        <Text color={theme.textMuted}>| KB: {kb}</Text>
+    <Box flexDirection="column" flexShrink={0} backgroundColor={theme.panel}>
+      {/* Row 1: identity + model + session */}
+      <Box
+        height={1}
+        flexDirection="row"
+        justifyContent="space-between"
+        backgroundColor={theme.panel}
+      >
+        <Box flexDirection="row" gap={1}>
+          <Text bold color={theme.accent} backgroundColor={theme.panel}>
+            [Tutor]
+          </Text>
+          <Text color={theme.textMuted}>@ {model.providerName}</Text>
+          <Text color={theme.textMuted}>| KB: {kb}</Text>
+        </Box>
+        <Box flexDirection="row" gap={1}>
+          <Text color={theme.text}>
+            {isProcessing ? "⋯" : "✓"} {model.modelName}
+          </Text>
+          {scrollInfo && <Text color={theme.textMuted}>{scrollInfo}</Text>}
+          {sessionPath && (
+            <Text color={theme.textMuted}>{formatSessionName(sessionPath)}</Text>
+          )}
+        </Box>
       </Box>
-      <Box flexDirection="row" gap={1}>
-        <Text color={theme.text}>
-          {isProcessing ? "⋯" : "✓"} {model.modelName}
-        </Text>
-        {scrollInfo && <Text color={theme.textMuted}>{scrollInfo}</Text>}
-        {sessionPath && (
-          <Text color={theme.textMuted}>{formatSessionName(sessionPath)}</Text>
-        )}
-        <Text color={theme.textMuted}>Ctrl+C exit</Text>
+      {/* Row 2: usage hints */}
+      <Box
+        height={1}
+        flexDirection="row"
+        justifyContent="space-between"
+        backgroundColor={theme.panel}
+      >
+        <Text color={theme.textMuted}>拖拽选中文本，松开即复制</Text>
+        <Text color={theme.textMuted}>Ctrl+C 退出</Text>
       </Box>
     </Box>
   );

@@ -146,7 +146,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   );
   const inputAreaHeight = Math.min(MAX_INPUT_LINES, 2 + inputLines);
 
-  const visibleHeight = Math.max(rows - inputAreaHeight - 1, 5); // rows - input area - status(1)
+  const visibleHeight = Math.max(rows - inputAreaHeight - 2, 5); // rows - input area - status(2 rows)
 
   // Total exact rows of the flattened message buffer and the clamp ceiling
   // for scrollOffset (per terminal row, matching pi's row-granular scroll).
@@ -388,8 +388,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 /* clipboard unavailable — selection still highlighted */
               }
             }
+            // Keep the selection highlighted after release (like native
+            // selection); the next press replaces it.
           }
-          setSelection(null);
         }
       }
     },
@@ -1082,9 +1083,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 // Anchor the hardware cursor inside the input box so the
                 // Windows Terminal IME composition window (pinyin pre-edit)
                 // follows the caret instead of the last written row.
-                // Row: statusbar occupies row `rows`; the input box spans
-                // inputAreaHeight rows directly above it (top row
-                // rows-inputAreaHeight), its first content row is +1.
+                // Row: the status bar occupies the bottom 2 rows; the input
+                // box spans inputAreaHeight rows directly above it (top row
+                // rows-inputAreaHeight-1), its first content row is +1.
                 // The command menu sits above the input box inside the same
                 // bottom-anchored container, so it does NOT shift the input
                 // box rows — no menu offset here.
@@ -1095,7 +1096,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 // follows the text and ends up at the wide-char position, so
                 // the hardware anchor must use terminal widths: 1 + 2 + 1 = 4
                 // offset => content starts at 1-based column 5.
-                screenRow={rows - inputAreaHeight + 1}
+                screenRow={rows - inputAreaHeight}
                 screenColBase={5}
               />
             </Box>
