@@ -46,11 +46,11 @@ export function TextInput({
   }, [value]);
 
   // Hardware-cursor anchoring: move the real terminal cursor to the input
-  // box's text caret and make it visible. Windows Terminal positions the
-  // IME composition window at the hardware cursor, so the pinyin pre-edit
-  // shows inside the input box instead of at the last written row (bottom
-  // right). Without a screenRow we keep the self-drawn ▎ and leave the
-  // hardware cursor hidden (global ?25l from index.ts).
+  // box's text caret but keep it HIDDEN — the self-drawn ▎ is the visible
+  // caret. Windows Terminal positions the IME composition window (pinyin
+  // pre-edit) at the hardware cursor's location, so anchoring it here makes
+  // the pinyin show inside the input box instead of at the last written row
+  // (bottom right), while the visible caret stays pixel-accurate (flexbox).
   const display = mask ? mask.repeat(value.length) : value;
   const shown = display || placeholder || "";
   const contentWidth = Math.max((stdout.columns ?? 80) - 4, 10);
@@ -66,11 +66,11 @@ export function TextInput({
     const colOffset = displayWidth(prefixLines[prefixLines.length - 1] ?? "");
     const row = screenRow + lineOffset;
     const col = (screenColBase ?? 1) + colOffset;
-    stdout.write(`\x1b[${row};${col}H\x1b[?25h`);
+    stdout.write(`\x1b[${row};${col}H\x1b[?25l`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cursor, focus, value, screenRow, screenColBase]);
 
-  // Hide the hardware cursor again when this input unmounts (e.g. switching
+  // Keep the hardware cursor hidden when this input unmounts (e.g. switching
   // to a picker mode) so it can't linger at the last written row.
   useEffect(() => {
     return () => {
@@ -113,13 +113,11 @@ export function TextInput({
     { isActive: focus }
   );
 
-  const useHardwareCursor = focus && screenRow !== undefined;
-
   return (
     <Box>
       <Text color={value ? undefined : theme.textMuted}>
         {shown.slice(0, cursor)}
-        {!useHardwareCursor && focus && <Text color={theme.accent}>▎</Text>}
+        {focus && <Text color={theme.accent}>▎</Text>}
         {shown.slice(cursor)}
       </Text>
     </Box>
