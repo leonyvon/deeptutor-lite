@@ -40,6 +40,19 @@ export const theme = {
   markdownBlockQuote: "#808080",
   /** Markdown horizontal rules (border gray). */
   markdownHr: "#3c3c3c",
+  /** Syntax highlighting palette (aligned with the UI tokens; currently the
+   *  markdown renderer uses shiki's github-dark hex values directly, these
+   *  tokens are reserved for a future scope→token mapping). */
+  syntaxKeyword: "#9d7cd8",
+  syntaxFunction: "#5c9cf5",
+  syntaxString: "#7fd88f",
+  syntaxNumber: "#e5c07b",
+  syntaxType: "#56b6c2",
+  syntaxComment: "#808080",
+  syntaxOperator: "#f5a742",
+  syntaxVariable: "#eeeeee",
+  syntaxPunctuation: "#808080",
+  syntaxTag: "#e06c75",
 } as const;
 
 export type Theme = typeof theme;

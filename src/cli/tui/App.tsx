@@ -27,6 +27,7 @@ import { AskPicker } from "./AskPicker.js";
 import { subscribeAsk, getPendingAsk, resolveAsk } from "./ask.js";
 import { sessionEntriesToMessages, loadSessionPreview } from "./history.js";
 import { theme } from "./theme.js";
+import { getHighlighter } from "./markdown.js";
 
 let idCounter = 0;
 function nextId(): string {
@@ -78,6 +79,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   const [menuIndex, setMenuIndex] = useState(0);
   const [menuVisible, setMenuVisible] = useState(false);
   const [thinkingTick, setThinkingTick] = useState(0);
+  // Triggers a re-render once the async shiki highlighter is ready so code
+  // blocks upgrade from the plain markdownCode color to syntax colors.
+  const [, setHighlighterReady] = useState(false);
 
   // Streaming delta batching: accumulate text_delta events and flush them at
   // most every STREAM_FLUSH_MS, coalescing several tokens per setState. This
@@ -107,6 +111,14 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
         { type: "assistant", text: buffered, streaming: true, id: nextId() },
       ];
     });
+  }, []);
+
+  // Kick off async shiki initialization; when ready, re-render so code blocks
+  // gain syntax colors (failure degrades silently to plain color).
+  useEffect(() => {
+    getHighlighter()
+      .then(() => setHighlighterReady(true))
+      .catch(() => {});
   }, []);
 
   const queueDeltaFlush = useCallback(() => {

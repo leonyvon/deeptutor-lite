@@ -12,6 +12,24 @@ import { Marked } from "marked";
 import type { Token, Tokens } from "marked";
 import { displayWidth } from "./MessageList.js";
 import { theme } from "./theme.js";
+import { createHighlighterCore } from "shiki/core";
+import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
+import type { HighlighterCore, ThemedToken } from "shiki/core";
+import githubDark from "shiki/themes/github-dark.mjs";
+import typescript from "shiki/langs/typescript.mjs";
+import javascript from "shiki/langs/javascript.mjs";
+import python from "shiki/langs/python.mjs";
+import bash from "shiki/langs/bash.mjs";
+import json from "shiki/langs/json.mjs";
+import markdownLang from "shiki/langs/markdown.mjs";
+import rust from "shiki/langs/rust.mjs";
+import go from "shiki/langs/go.mjs";
+import java from "shiki/langs/java.mjs";
+import sql from "shiki/langs/sql.mjs";
+import yaml from "shiki/langs/yaml.mjs";
+import xml from "shiki/langs/xml.mjs";
+import css from "shiki/langs/css.mjs";
+import c from "shiki/langs/c.mjs";
 
 export interface MdSegment {
   text: string;
@@ -46,6 +64,99 @@ interface StyledChar {
 interface RenderCtx {
   width: number;
   out: MdLine[];
+}
+
+// ---------------------------------------------------------------------------
+// Syntax highlighting (shiki, lazy + asynchronous).
+//
+// shiki's JS regex engine needs no oniguruma wasm, so it initializes fine on
+// plain Node. markdown.ts must stay a synchronous render path, so the
+// highlighter is created lazily on first `getHighlighter()` call; while it is
+// not ready, code blocks fall back to the plain `markdownCode` color. Line
+// counts are identical either way (highlighting only recolors), so the scroll
+// window stays aligned. On ready, the render cache is cleared so already
+// shown messages get re-rendered with colors.
+// ---------------------------------------------------------------------------
+
+let highlighter: HighlighterCore | null = null;
+let highlighterPromise: Promise<HighlighterCore> | null = null;
+let highlighterReady = false;
+
+/** True once the shiki highlighter finished initializing. */
+export function isHighlighterReady(): boolean {
+  return highlighterReady;
+}
+
+/** Lazily create (once) and return the shiki highlighter. */
+export function getHighlighter(): Promise<HighlighterCore> {
+  if (highlighter) return Promise.resolve(highlighter);
+  if (!highlighterPromise) {
+    highlighterPromise = createHighlighterCore({
+      themes: [githubDark],
+      langs: [
+        typescript,
+        javascript,
+        python,
+        bash,
+        json,
+        markdownLang,
+        rust,
+        go,
+        java,
+        sql,
+        yaml,
+        xml,
+        css,
+        c,
+      ],
+      engine: createJavaScriptRegexEngine(),
+    })
+      .then((hl) => {
+        highlighter = hl;
+        highlighterReady = true;
+        // Plain-color render results can now be upgraded with syntax colors.
+        cache.clear();
+        return hl;
+      })
+      .catch((err) => {
+        // Silent degradation: keep plain colors, allow a later retry.
+        highlighterPromise = null;
+        highlighterReady = false;
+        console.error("deeptutor: shiki highlighter init failed:", err);
+        return Promise.reject(err);
+      });
+  }
+  return highlighterPromise;
+}
+
+/** Map common fenced-code language tags to a registered shiki language id. */
+const LANG_ALIASES: Record<string, string> = {
+  ts: "typescript",
+  js: "javascript",
+  py: "python",
+  sh: "bash",
+  shell: "bash",
+  zsh: "bash",
+  md: "markdown",
+  mdx: "markdown",
+  yml: "yaml",
+  html: "xml",
+};
+
+function normalizeLang(lang: string): string {
+  const key = lang.trim().toLowerCase();
+  return LANG_ALIASES[key] ?? key;
+}
+
+/** github-dark emits 6-digit hex; defensively strip any alpha channel. */
+function cleanTokenColor(color: string | undefined): string | undefined {
+  if (!color) return undefined;
+  return color.length === 9 && color.startsWith("#") ? color.slice(0, 7) : color;
+}
+
+/** True when a shiki token carries the italic font style (FontStyle.Italic = 1). */
+function tokenIsItalic(fontStyle: number | undefined): boolean {
+  return (fontStyle ?? 0) & 1 ? true : false;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,9 +382,36 @@ function renderCode(code: Tokens.Code, ctx: RenderCtx): void {
   if (codeText === "") return; // empty fence — nothing to render yet
   const base: Style = { color: theme.markdownCode };
   const indent: MdSegment = { text: "  " };
-  for (const ln of codeText.split("\n")) {
+
+  // Highlight the whole block in one pass (preserves grammar state across
+  // lines), then wrap each tokenized line with the exact same wrap logic as
+  // the plain path — row counts are therefore identical. Token contents are
+  // exact substrings of the source line, so per-row plain text is unchanged.
+  const hl = highlighter;
+  const lang = code.lang && code.codeBlockStyle !== "indented" ? normalizeLang(code.lang) : undefined;
+  let tokenLines: ThemedToken[][] | null = null;
+  if (hl && lang) {
+    try {
+      tokenLines = hl.codeToTokens(codeText, { lang, theme: "github-dark" }).tokens;
+    } catch {
+      tokenLines = null; // unknown/unparseable lang → plain fallback
+    }
+  }
+
+  const sourceLines = codeText.split("\n");
+  for (let i = 0; i < sourceLines.length; i++) {
     const chars: StyledChar[] = [];
-    pushText(ln, base, chars);
+    const tokens = tokenLines?.[i];
+    if (tokens && tokens.length > 0) {
+      for (const tok of tokens) {
+        pushText(tok.content, {
+          color: cleanTokenColor(tok.color),
+          italic: tokenIsItalic(tok.fontStyle),
+        }, chars);
+      }
+    } else {
+      pushText(sourceLines[i], base, chars);
+    }
     emitWrapped(chars, ctx.width, indent, indent, ctx.out);
   }
 }
