@@ -25,6 +25,26 @@ interface MessageListProps {
 /** Content column (0-based) of screen column x: 2-col left padding. */
 const PAD_COLS = 2;
 
+/**
+ * Normalize a screen selection with drag-DIRECTION awareness. Global
+ * min/max of x/y is WRONG for reverse drags (bottom-right → top-left):
+ * the top row must use the x of the row where the drag STARTED, and the
+ * bottom row the x where it ENDED. Returns top/bottom row + their x.
+ */
+function normalizeSelection(sel: ScreenSelection): {
+  topY: number;
+  bottomY: number;
+  topX: number;
+  bottomX: number;
+} {
+  const { startY, endY, startX, endX } = sel;
+  const topY = Math.min(startY, endY);
+  const bottomY = Math.max(startY, endY);
+  const topX = startY <= endY ? startX : endX;
+  const bottomX = startY <= endY ? endX : startX;
+  return { topY, bottomY, topX, bottomX };
+}
+
 /** First visible buffer row, mirroring MessageList's window math exactly. */
 function viewStartOf(
   linesLength: number,
@@ -74,18 +94,22 @@ export function extractSelectionText(
   const contentWidth = Math.max(termWidth - 4, 20);
   const lines = buildBufferLines(messages, contentWidth);
   const viewStart = viewStartOf(lines.length, scrollOffset, visibleHeight);
-  const minY = Math.min(selection.startY, selection.endY);
-  const maxY = Math.max(selection.startY, selection.endY);
-  const minX = Math.min(selection.startX, selection.endX);
-  const maxX = Math.max(selection.startX, selection.endX);
+  const { topY, bottomY, topX, bottomX } = normalizeSelection(selection);
   const out: string[] = [];
-  for (let y = minY; y <= maxY; y++) {
+  for (let y = topY; y <= bottomY; y++) {
     if (y < 1 || y > visibleHeight) continue;
     const buf = viewStart + (y - 1);
     if (buf < 0 || buf >= lines.length) continue;
     const { chars } = flattenLine(lines[buf]);
-    const colStart = y === minY ? Math.max(0, minX - 1 - PAD_COLS) : 0;
-    const colEnd = y === maxY ? Math.max(0, maxX - 1 - PAD_COLS) : Number.POSITIVE_INFINITY;
+    // Top row starts at the drag-start column; bottom row ends at the
+    // drag-end column; middle rows are fully included. For a single row
+    // both cuts apply on the same row.
+    const colStart =
+      y === topY ? Math.max(0, topX - 1 - PAD_COLS) : 0;
+    const colEnd =
+      y === bottomY
+        ? Math.max(0, bottomX - 1 - PAD_COLS)
+        : Number.POSITIVE_INFINITY;
     let text = "";
     let col = 0;
     for (const c of chars) {
@@ -376,13 +400,11 @@ export function MessageList({
 
   // Selection (screen coords, 1-based) normalized to content columns for
   // each visible row. Row content starts at column PAD_COLS+1 on screen.
+  // Uses the same direction-aware normalization as extractSelectionText so
+  // the highlight always matches what gets copied.
   const sel = useMemo(() => {
     if (!selection) return null;
-    const minY = Math.min(selection.startY, selection.endY);
-    const maxY = Math.max(selection.startY, selection.endY);
-    const minX = Math.min(selection.startX, selection.endX);
-    const maxX = Math.max(selection.startX, selection.endX);
-    return { minY, maxY, minX, maxX };
+    return normalizeSelection(selection);
   }, [selection]);
 
   return (
@@ -390,10 +412,10 @@ export function MessageList({
       {view.map((line, i) => {
         const screenY = i + 1;
         let selRange: { start: number; end: number } | null = null;
-        if (sel && screenY >= sel.minY && screenY <= sel.maxY) {
+        if (sel && screenY >= sel.topY && screenY <= sel.bottomY) {
           selRange = {
-            start: screenY === sel.minY ? Math.max(0, sel.minX - 1 - PAD_COLS) : 0,
-            end: screenY === sel.maxY ? Math.max(0, sel.maxX - 1 - PAD_COLS) : Number.POSITIVE_INFINITY,
+            start: screenY === sel.topY ? Math.max(0, sel.topX - 1 - PAD_COLS) : 0,
+            end: screenY === sel.bottomY ? Math.max(0, sel.bottomX - 1 - PAD_COLS) : Number.POSITIVE_INFINITY,
           };
         }
         const segs = line.segments;

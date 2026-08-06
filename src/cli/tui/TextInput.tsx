@@ -117,6 +117,14 @@ export function TextInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screenRow]);
 
+  // Bracketed paste (terminal sends ESC[200~ .. ESC[201~ around pasted text;
+  // ink strips ESC so we see "[200~"/"[201~"). Without this, CR/LF inside a
+  // multi-line paste arrive as bare \r\n which ink maps to return/enter keys
+  // — submitting early and scrambling the input. In paste mode we buffer
+  // everything (newlines preserved) and insert it as one chunk on ESC[201~.
+  const pastingRef = useRef(false);
+  const pasteBufRef = useRef("");
+
   useInput(
     (input, key) => {
       if (!focus) return;
@@ -124,6 +132,32 @@ export function TextInput({
       // ink strips the ESC; they belong to the App's mouse handler, never
       // to the input value.
       if (input.startsWith("[<")) return;
+      // Bracketed paste start/end markers.
+      if (input === "[200~") {
+        pastingRef.current = true;
+        pasteBufRef.current = "";
+        return;
+      }
+      if (input === "[201~") {
+        pastingRef.current = false;
+        const text = pasteBufRef.current;
+        if (text) {
+          onChange(value.slice(0, cursor) + text + value.slice(cursor));
+          setCursor((c) => c + text.length);
+        }
+        return;
+      }
+      if (pastingRef.current) {
+        // Accumulate paste content verbatim; normalize CR/LF to \n.
+        if (key.return || input === "\n" || input === "\r") {
+          pasteBufRef.current += "\n";
+        } else if (key.tab || input === "\t") {
+          pasteBufRef.current += "\t";
+        } else if (input) {
+          pasteBufRef.current += input;
+        }
+        return;
+      }
       internalEdit.current = true;
 
       if (key.return) {
