@@ -993,15 +993,13 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 // Anchor the hardware cursor inside the input box so the
                 // Windows Terminal IME composition window (pinyin pre-edit)
                 // follows the caret instead of the last written row.
-                // Row: rows - statusbar(1) - inputArea - commandMenu? + border(1)
-                screenRow={
-                  rows -
-                  inputAreaHeight -
-                  (menuOpen && menuCommands.length > 0
-                    ? Math.min(menuCommands.length, 8) + 7
-                    : 0) +
-                  2
-                }
+                // Row: statusbar occupies row `rows`; the input box spans
+                // inputAreaHeight rows directly above it (top row
+                // rows-inputAreaHeight), its first content row is +1.
+                // The command menu sits above the input box inside the same
+                // bottom-anchored container, so it does NOT shift the input
+                // box rows — no menu offset here.
+                screenRow={rows - inputAreaHeight + 1}
                 screenColBase={4}
               />
             </Box>
