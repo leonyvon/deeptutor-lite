@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Box, Text, useInput, useStdout } from "ink";
+import { Box, Text, useInput, useStdout, usePaste } from "ink";
 import { theme } from "./theme.js";
 import { displayWidth, wrapToLines } from "./MessageList.js";
 
@@ -117,16 +117,23 @@ export function TextInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screenRow]);
 
-  // Bracketed paste handling. CRITICAL: ink delivers the WHOLE paste as ONE
-  // input chunk — e.g. "[200~line1\nline2\x1b[201~" — it does NOT split the
-  // markers into separate events. So exact-match on "[200~"/"[201~" never
-  // fires and the raw chunk (markers + \r\n) would land in the input value,
-  // scrambling multi-line pastes. Instead we scan the chunk for the markers,
-  // extract the content between them, normalize CRLF/CR to LF, and insert it
-  // as a single value update. Chunked delivery (marker/content split across
-  // stdin reads) is handled by the same refs.
-  const pastingRef = useRef(false);
-  const pasteBufRef = useRef("");
+  // Paste handling via ink's official usePaste channel. CRITICAL: ink's
+  // input-parser STRIPS the [200~/[201~ bracketed-paste markers and emits a
+  // dedicated "paste" event; if no component listens (usePaste), ink falls
+  // back to forwarding the raw pasted text (with \r newlines) into useInput
+  // — which is why marker-scanning inside useInput never worked. usePaste
+  // receives the whole pasted string on its own channel.
+  usePaste(
+    (text) => {
+      // Windows Terminal normalizes pasted newlines to \r; restore \n for
+      // display/editing consistency.
+      const clean = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      if (!clean) return;
+      onChange(value.slice(0, cursor) + clean + value.slice(cursor));
+      setCursor((c) => c + clean.length);
+    },
+    { isActive: focus }
+  );
 
   useInput(
     (input, key) => {
@@ -135,43 +142,6 @@ export function TextInput({
       // ink strips the ESC; they belong to the App's mouse handler, never
       // to the input value.
       if (input.startsWith("[<")) return;
-
-      const startIdx = input.indexOf("[200~");
-
-      if (startIdx >= 0 || pastingRef.current) {
-        // Enter paste mode on the start marker; buffer everything after it.
-        if (startIdx >= 0) {
-          pastingRef.current = true;
-          pasteBufRef.current = "";
-          input = input.slice(startIdx + 5);
-        }
-        // Find the end marker AFTER slicing (indexes shift). The terminal
-        // sends "\x1b[201~" with the ESC intact mid-chunk, so prefer the
-        // ESC-prefixed form and cut before it.
-        let endIdx = input.indexOf("\x1b[201~");
-        if (endIdx < 0) endIdx = input.indexOf("[201~");
-        let content = input;
-        if (endIdx >= 0) {
-          content = content.slice(0, endIdx);
-          pastingRef.current = false;
-        }
-        // Preserve newlines as \n (terminal may send \r\n or bare \r).
-        content = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-        // Chunked fallback: if ink split the paste into per-char events,
-        // bare \r/\n/tab arrive as keys with empty input.
-        if (key.return) content += "\n";
-        else if (key.tab) content += "\t";
-        if (content) pasteBufRef.current += content;
-        if (!pastingRef.current) {
-          const text = pasteBufRef.current;
-          pasteBufRef.current = "";
-          if (text) {
-            onChange(value.slice(0, cursor) + text + value.slice(cursor));
-            setCursor((c) => c + text.length);
-          }
-        }
-        return;
-      }
 
       internalEdit.current = true;
 
