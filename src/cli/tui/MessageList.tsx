@@ -1,11 +1,12 @@
 import React, { useMemo } from "react";
 import { Box, Text } from "ink";
 import type { UIMessage } from "./types.js";
-import { ToolCard } from "./ToolCard.js";
 
 interface MessageListProps {
   messages: UIMessage[];
+  /** 0 = at newest (bottom); >0 = shifted up, in terminal ROWS. */
   scrollOffset: number;
+  /** Rows available for the message area. */
   visibleHeight: number;
 }
 
@@ -53,17 +54,126 @@ export function countDisplayLines(text: string, width: number): number {
   return lines;
 }
 
-export function estimateMessageHeight(msg: UIMessage, termWidth: number): number {
-  const width = Math.max(termWidth - 8, 20);
-  let lines = 0;
-  if (msg.type === "user") {
-    lines = 1 + countDisplayLines(msg.text, width);
-  } else if (msg.type === "assistant") {
-    lines = 1 + countDisplayLines(msg.text, width) + (msg.streaming ? 1 : 0);
-  } else if (msg.type === "tool") {
-    lines = 2;
+/**
+ * Exact character-level wrap: splits `text` into terminal rows of at most
+ * `width` columns, honouring CJK display width. Each returned line has
+ * displayWidth(line) <= width, so rendering it on a fixed-width row never
+ * wraps again — the rendered row count matches the buffer exactly.
+ * Results are cached per (width, text) so streaming updates only re-wrap
+ * the message that changed (same idea as pi-tui's component caches).
+ */
+const wrapCache = new Map<string, string[]>();
+
+export function wrapToLines(text: string, width: number): string[] {
+  const key = `${width}\u0000${text}`;
+  const hit = wrapCache.get(key);
+  if (hit) return hit;
+  const lines: string[] = [];
+  for (const seg of text.split("\n")) {
+    if (seg === "") {
+      lines.push("");
+      continue;
+    }
+    let cur = "";
+    let curW = 0;
+    for (const ch of seg) {
+      const w = displayWidth(ch);
+      if (curW + w > width) {
+        lines.push(cur);
+        cur = ch;
+        curW = w;
+      } else {
+        cur += ch;
+        curW += w;
+      }
+    }
+    lines.push(cur);
   }
-  return lines + 1; // +1 for margin
+  wrapCache.set(key, lines);
+  return lines;
+}
+
+type LineStyle =
+  | "user-label"
+  | "user"
+  | "tutor"
+  | "assistant"
+  | "error"
+  | "tool-running"
+  | "tool-success"
+  | "tool-error"
+  | "spacer";
+
+interface BufferLine {
+  key: string;
+  style: LineStyle;
+  text: string;
+}
+
+/**
+ * Flatten the message list into a single precise row buffer (like pi-tui's
+ * chat container): every message is wrapped to exact terminal rows, messages
+ * are separated by one spacer row, and the streaming cursor is appended to
+ * the last row. Height is always exact — no estimation anywhere.
+ */
+function buildBufferLines(messages: UIMessage[], width: number): BufferLine[] {
+  const out: BufferLine[] = [];
+  messages.forEach((msg, mi) => {
+    if (out.length > 0) {
+      out.push({ key: `spacer-${mi}`, style: "spacer", text: "" });
+    }
+    if (msg.type === "user") {
+      out.push({ key: `${mi}-lbl`, style: "user-label", text: "You" });
+      for (const ln of wrapToLines(msg.text, width)) {
+        out.push({ key: `${mi}-u-${out.length}`, style: "user", text: ln });
+      }
+    } else if (msg.type === "assistant") {
+      const isErr = msg.isError === true;
+      out.push({
+        key: `${mi}-lbl`,
+        style: isErr ? "error" : "tutor",
+        text: isErr ? "Error" : "Tutor",
+      });
+      const body = wrapToLines(msg.text, width);
+      if (msg.streaming && body.length > 0) body[body.length - 1] += "▎";
+      for (const ln of body) {
+        out.push({
+          key: `${mi}-a-${out.length}`,
+          style: isErr ? "error" : "assistant",
+          text: ln,
+        });
+      }
+    } else if (msg.type === "tool") {
+      const icon =
+        msg.status === "running" ? "⚙" : msg.status === "success" ? "✓" : "✖";
+      const label =
+        msg.status === "error"
+          ? `${icon} ${msg.toolName} failed`
+          : `${icon} ${msg.toolName}`;
+      const text =
+        msg.status === "running" && msg.args
+          ? `${label} ${msg.args.slice(0, 120)}`
+          : label;
+      const style: LineStyle =
+        msg.status === "running"
+          ? "tool-running"
+          : msg.status === "success"
+            ? "tool-success"
+            : "tool-error";
+      for (const ln of wrapToLines(text, width)) {
+        out.push({ key: `${mi}-t-${out.length}`, style, text: ln });
+      }
+    }
+  });
+  return out;
+}
+
+/**
+ * Total exact row count of the flattened message buffer for `messages`.
+ * Used by the App to clamp scrollOffset to a per-row ceiling.
+ */
+export function totalBufferLines(messages: UIMessage[], termWidth: number): number {
+  return buildBufferLines(messages, Math.max(termWidth - 2, 20)).length;
 }
 
 export function MessageList({
@@ -71,95 +181,64 @@ export function MessageList({
   scrollOffset,
   visibleHeight,
 }: MessageListProps): React.ReactElement {
-  // Build a window of visible messages based on estimated heights, with
-  // sub-message granularity: scrollOffset rows walk upward from the newest
-  // message, and the first visible message may be partially cut at its top
-  // (cutTop rows hidden above the viewport). This gives smooth per-row
-  // scrolling instead of whole-message jumps.
-  const { visibleMessages, startIndex, cutTop } = useMemo(() => {
-    if (messages.length === 0) {
-      return { visibleMessages: [] as UIMessage[], startIndex: 0, cutTop: 0 };
-    }
-    const termWidth = process.stdout.columns ?? 80;
-    const heights = messages.map((m) => estimateMessageHeight(m, termWidth));
+  const termWidth = process.stdout.columns ?? 80;
+  const contentWidth = Math.max(termWidth - 2, 20);
 
-    // A) Walk from the bottom (newest) upward by scrollOffset rows.
-    //    firstIdx = first visible message; cutTop = rows of it hidden above.
-    let firstIdx = messages.length;
-    let cutTop = 0;
-    let remain = scrollOffset;
-    for (let i = messages.length - 1; i >= 0 && remain > 0; i--) {
-      const h = heights[i];
-      if (remain >= h) {
-        remain -= h;
-        continue; // whole message scrolled out of view
-      }
-      firstIdx = i; // partial: bottom (h - remain) rows still visible
-      cutTop = remain;
-      remain = 0;
-      break;
-    }
-    if (firstIdx === messages.length) {
-      // Everything scrolled past (clamp should prevent this; belt & braces).
-      firstIdx = 0;
-      cutTop = 0;
-    }
+  const lines = useMemo(
+    () => buildBufferLines(messages, contentWidth),
+    [messages, contentWidth]
+  );
 
-    // B) Fill downward from firstIdx until visibleHeight rows are consumed.
-    let lastIdx = firstIdx;
-    let filled = 0;
-    for (let i = firstIdx; i < messages.length; i++) {
-      const visibleH = i === firstIdx ? heights[i] - cutTop : heights[i];
-      if (filled + visibleH > visibleHeight) break;
-      filled += visibleH;
-      lastIdx = i + 1;
-    }
-    if (lastIdx <= firstIdx) lastIdx = firstIdx + 1; // at least one message
-
-    return {
-      visibleMessages: messages.slice(firstIdx, lastIdx),
-      startIndex: firstIdx,
-      cutTop,
-    };
-  }, [messages, scrollOffset, visibleHeight]);
-
-  const atTop = startIndex === 0 && cutTop === 0;
+  // Window: rows [start, start+visibleHeight) of the flat buffer.
+  // scrollOffset 0 = newest at bottom; scrolling up moves the window start
+  // toward row 0 (oldest). Perfectly aligned rows — no partial-message jumps.
+  const maxScroll = Math.max(0, lines.length - visibleHeight);
+  const offset = Math.min(scrollOffset, maxScroll);
+  const start = Math.max(0, lines.length - visibleHeight - offset);
+  const view = lines.slice(start, start + visibleHeight);
 
   return (
-    <Box
-      flexDirection="column"
-      flexGrow={1}
-      justifyContent={atTop ? "flex-start" : "flex-end"}
-      overflow="hidden"
-    >
-      {visibleMessages.map((msg, i) => (
+    <Box flexDirection="column" flexGrow={1} overflow="hidden">
+      {view.map((line) => (
         <Box
-          key={msg.id}
+          key={line.key}
+          height={1}
           flexShrink={0}
-          marginY={msg.type === "tool" ? 0 : 1}
-          marginTop={i === 0 && cutTop > 0 ? -cutTop : undefined}
+          width={termWidth}
+          paddingX={1}
         >
-          {msg.type === "user" && (
-            <Box flexDirection="column">
-              <Text bold color="cyan">
-                You
-              </Text>
-              <Text>{msg.text}</Text>
-            </Box>
-          )}
-          {msg.type === "assistant" && (
-            <Box flexDirection="column">
-              <Text bold color={msg.isError ? "red" : "white"}>
-                {msg.isError ? "Error" : "Tutor"}
-              </Text>
-              <Text color={msg.isError ? "red" : msg.streaming ? undefined : "gray"}>
-                {msg.text}
-              </Text>
-              {msg.streaming && <Text color="gray">▎</Text>}
-            </Box>
-          )}
-          {msg.type === "tool" && (
-            <ToolCard toolName={msg.toolName} args={msg.args} status={msg.status} />
+          {line.style === "spacer" ? (
+            <Text> </Text>
+          ) : line.style === "user-label" ? (
+            <Text bold color="cyan">
+              You
+            </Text>
+          ) : line.style === "tutor" ? (
+            <Text bold color="white">
+              Tutor
+            </Text>
+          ) : line.style === "error" ? (
+            <Text bold color="red">
+              {line.text}
+            </Text>
+          ) : line.style === "tool-running" ? (
+            <Text color="yellow" wrap="truncate">
+              {line.text}
+            </Text>
+          ) : line.style === "tool-success" ? (
+            <Text color="green" wrap="truncate">
+              {line.text}
+            </Text>
+          ) : line.style === "tool-error" ? (
+            <Text color="red" wrap="truncate">
+              {line.text}
+            </Text>
+          ) : line.style === "user" ? (
+            <Text wrap="truncate">{line.text}</Text>
+          ) : (
+            <Text color="gray" wrap="truncate">
+              {line.text}
+            </Text>
           )}
         </Box>
       ))}

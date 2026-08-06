@@ -16,7 +16,7 @@ import { basename } from "node:path";
 import type { DeeptutorRuntime } from "../../agent/harness.js";
 import type { JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import type { UIMessage, AppMode } from "./types.js";
-import { MessageList, estimateMessageHeight, countDisplayLines } from "./MessageList.js";
+import { MessageList, totalBufferLines, countDisplayLines } from "./MessageList.js";
 import { CommandMenu } from "./CommandMenu.js";
 import { TextInput } from "./TextInput.js";
 import { StatusBar } from "./StatusBar.js";
@@ -91,15 +91,14 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
 
   const visibleHeight = Math.max(rows - inputAreaHeight - 1, 5); // rows - input area - status(1)
 
-  // Total estimated scrollable height and the clamp ceiling for scrollOffset
-  const totalHeight = useMemo(() => {
-    return messages.reduce(
-      (acc, m) => acc + estimateMessageHeight(m, termWidth),
-      0
-    );
-  }, [messages, termWidth]);
+  // Total exact rows of the flattened message buffer and the clamp ceiling
+  // for scrollOffset (per terminal row, matching pi's row-granular scroll).
+  const totalLines = useMemo(
+    () => totalBufferLines(messages, termWidth),
+    [messages, termWidth]
+  );
 
-  const maxScroll = Math.max(0, totalHeight - visibleHeight);
+  const maxScroll = Math.max(0, totalLines - visibleHeight);
 
   const clampScroll = useCallback(
     (v: number) => Math.max(0, Math.min(v, maxScroll)),
@@ -250,18 +249,21 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   // selection. Instead we enable Alternate Scroll (xterm 1007) — the terminal
   // then translates the wheel into ↑/↓ arrow keys for us while leaving mouse
   // selection to the terminal itself (pi/opencode do the same).
+  // Scroll offset is per terminal row (the message area is a flat row buffer,
+  // exactly like pi's chat container) — so the wheel scrolls 1 row at a time,
+  // never whole messages.
   useInput(
     (input, key) => {
       // While the slash-command palette is open, ↑/↓ belong to menu navigation.
       if (menuOpen) return;
       if (key.pageUp) {
-        setScrollOffset((prev) => clampScroll(prev + 5));
+        setScrollOffset((prev) => clampScroll(prev + Math.max(5, Math.floor(visibleHeight * 0.3))));
       } else if (key.pageDown) {
-        setScrollOffset((prev) => clampScroll(prev - 5));
+        setScrollOffset((prev) => clampScroll(prev - Math.max(5, Math.floor(visibleHeight * 0.3))));
       } else if (key.upArrow) {
-        setScrollOffset((prev) => clampScroll(prev + 3));
+        setScrollOffset((prev) => clampScroll(prev + 1));
       } else if (key.downArrow) {
-        setScrollOffset((prev) => clampScroll(prev - 3));
+        setScrollOffset((prev) => clampScroll(prev - 1));
       }
     },
     { isActive: mode.type === "chat" && !isProcessing }
