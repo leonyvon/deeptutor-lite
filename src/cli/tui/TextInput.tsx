@@ -33,9 +33,22 @@ export function TextInput({
   const { stdout } = useStdout();
   // Cursor position in characters within `value` (0..value.length).
   const [cursor, setCursor] = useState(value.length);
+  // Blinking pencil caret: toggles every 500ms while focused. The state lives
+  // in THIS component only, so each tick re-renders just the input row (ink
+  // diffs it) — never the message area — leaving mouse text selection intact.
+  const [cursorOn, setCursorOn] = useState(true);
   // Distinguishes internal edits (keep cursor) from external value changes
   // like Tab-completion (jump cursor to end).
   const internalEdit = useRef(false);
+
+  useEffect(() => {
+    if (!focus) {
+      setCursorOn(true);
+      return;
+    }
+    const t = setInterval(() => setCursorOn((v) => !v), 500);
+    return () => clearInterval(t);
+  }, [focus]);
 
   useEffect(() => {
     if (internalEdit.current) {
@@ -117,7 +130,14 @@ export function TextInput({
     <Box>
       <Text color={value ? undefined : theme.textMuted}>
         {shown.slice(0, cursor)}
-        {focus && <Text color={theme.accent}>▎</Text>}
+        {focus &&
+          (cursorOn ? (
+            <Text color={theme.accent}>✏️</Text>
+          ) : (
+            // Full-width space keeps the caret column width (2) stable so the
+            // text after it never shifts while blinking.
+            <Text>　</Text>
+          ))}
         {shown.slice(cursor)}
       </Text>
     </Box>
