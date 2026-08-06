@@ -96,8 +96,11 @@ async function main(): Promise<void> {
   // interactive choice questions inside the interface.
   const runtime = new DeeptutorRuntime(config, session, inkAsk);
 
-  render(React.createElement(App, { runtime, repo }));
-  // TUI owns the process lifecycle from here (Ctrl+C handled by ink).
+  // exitOnCtrlC: false — the App handles Ctrl+C itself (clears the input box
+  // when it has content, exits only when empty). ink's default would swallow
+  // the keypress and quit immediately.
+  render(React.createElement(App, { runtime, repo }), { exitOnCtrlC: false });
+  // TUI owns the process lifecycle from here (Ctrl+C handled by the App).
 }
 
 main().catch((err) => {

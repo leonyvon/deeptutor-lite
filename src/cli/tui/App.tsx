@@ -92,6 +92,12 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   const [selection, setSelection] = useState<ScreenSelection | null>(null);
   const [mouseDown, setMouseDown] = useState(false);
 
+  // Multi-line paste block (opencode-style): pasted text with newlines is
+  // shown as a "pasted ~N lines" block instead of being inserted into the
+  // input value, avoiding multi-line caret-row rendering issues. The block
+  // content is sent as a user message on submit.
+  const [pasted, setPasted] = useState<{ text: string; lines: number } | null>(null);
+
   // Streaming delta batching: accumulate text_delta events and flush them at
   // most every STREAM_FLUSH_MS, coalescing several tokens per setState. This
   // is the ink-side equivalent of pi's render throttling — without it, every
@@ -144,7 +150,11 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     1,
     countDisplayLines(input || PLACEHOLDER_TEXT, Math.max(termWidth - 4, 10))
   );
-  const inputAreaHeight = Math.min(MAX_INPUT_LINES, 2 + inputLines);
+  // Multi-line paste block adds one row above the typed line (opencode style).
+  const inputAreaHeight = Math.min(
+    MAX_INPUT_LINES,
+    2 + inputLines + (pasted ? 1 : 0)
+  );
 
   const visibleHeight = Math.max(rows - inputAreaHeight - 2, 5); // rows - input area - status(2 rows)
 
@@ -319,12 +329,13 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     { isActive: mode.type === "chat" && !isProcessing }
   );
 
-  // Ctrl+C: clear the input box when it has content; exit only when empty
-  // (and not inside a picker/menu).
+  // Ctrl+C: clear the input box (and any pasted block) when it has content;
+  // exit only when empty (and not inside a picker/menu).
   useInput((char, key) => {
     if (key.ctrl && char === "c") {
-      if (mode.type === "chat" && input.length > 0) {
+      if (mode.type === "chat" && (input.length > 0 || pasted)) {
         setInput("");
+        setPasted(null);
         setMenuVisible(false);
         setMenuIndex(0);
       } else {
@@ -523,7 +534,10 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
 
   const handleSubmit = useCallback(
     async (value: string) => {
-      let line = value.trim();
+      // A multi-line paste block (if any) is prepended to the typed input.
+      let line = pasted
+        ? pasted.text + (value.trim() ? "\n" + value.trim() : "")
+        : value.trim();
       // Menu open + valid highlight → run the highlighted command instead of
       // the raw input (opencode palette behavior).
       if (
@@ -536,6 +550,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
       }
       if (!line) return;
       setInput("");
+      setPasted(null);
 
       if (line.startsWith("/")) {
         const [cmd, ...rest] = line.split(/\s+/);
@@ -1063,6 +1078,13 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             backgroundColor={theme.panel}
             paddingX={1}
           >
+            {pasted && (
+              <Box flexShrink={0}>
+                <Text color={theme.accent} bold>
+                  pasted ~{pasted.lines} lines
+                </Text>
+              </Box>
+            )}
             <Box flexDirection="row">
               <Text color={theme.primary}>{isProcessing ? "⋯ " : "❯ "}</Text>
               <TextInput
@@ -1077,6 +1099,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 focus={!isProcessing}
                 blinkPaused={mouseDown}
                 menuOpen={menuOpen}
+                onMultiLinePaste={(text) =>
+                  setPasted({ text, lines: text.split("\n").length })
+                }
                 // Anchor the hardware cursor inside the input box so the
                 // Windows Terminal IME composition window (pinyin pre-edit)
                 // follows the caret instead of the last written row.

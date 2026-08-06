@@ -22,6 +22,12 @@ interface TextInputProps {
   blinkPaused?: boolean;
   /** When a dropdown/menu is open, ↑/↓ belong to it, not the caret. */
   menuOpen?: boolean;
+  /**
+   * Called for multi-line pastes instead of inserting them into the value —
+   * the App shows a "pasted ~N lines" block (opencode-style). Single-line
+   * pastes are inserted directly at the caret.
+   */
+  onMultiLinePaste?: (text: string) => void;
 }
 
 export function TextInput({
@@ -35,6 +41,7 @@ export function TextInput({
   screenColBase,
   blinkPaused = false,
   menuOpen = false,
+  onMultiLinePaste,
 }: TextInputProps): React.ReactElement {
   const { stdout } = useStdout();
   // Cursor position in characters within `value` (0..value.length).
@@ -126,12 +133,20 @@ export function TextInput({
   // back to forwarding the raw pasted text (with \r newlines) into useInput
   // — which is why marker-scanning inside useInput never worked. usePaste
   // receives the whole pasted string on its own channel.
+  // Single-line pastes insert at the caret; multi-line pastes are reported
+  // to the App, which shows a "pasted ~N lines" block instead of expanding
+  // the content into the input box (opencode-style, avoids multi-line
+  // rendering issues in the caret row-buffer).
   usePaste(
     (text) => {
       // Windows Terminal normalizes pasted newlines to \r; restore \n for
       // display/editing consistency.
       const clean = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
       if (!clean) return;
+      if (clean.includes("\n")) {
+        onMultiLinePaste?.(clean);
+        return;
+      }
       onChange(value.slice(0, cursor) + clean + value.slice(cursor));
       setCursor((c) => c + clean.length);
     },
@@ -145,15 +160,19 @@ export function TextInput({
       if (menuOpen) return;
       const lines = wrapToLines(shown, contentWidth);
       if (lines.length <= 1) return;
-      // Locate the caret's current line & column (display width).
+      // Locate the caret's line. `cursor` is a char index into `shown`;
+      // walk rows accumulating char counts. Conditions handle the edge
+      // cases precisely: caret at a row start belongs to that row, at a row
+      // end belongs to that row, at the very end belongs to the last row.
       let lineIdx = 0;
       let acc = 0;
       for (let i = 0; i < lines.length; i++) {
-        if (acc + lines[i].length > cursor) {
+        if (cursor < acc + lines[i].length) {
           lineIdx = i;
           break;
         }
         acc += lines[i].length;
+        lineIdx = i;
       }
       const target = lineIdx + dir;
       if (target < 0 || target >= lines.length) return;
@@ -186,9 +205,9 @@ export function TextInput({
 
       internalEdit.current = true;
 
-      // Shift+Enter inserts a newline; plain Enter submits. (Ink reports
-      // Shift+Enter as key.return + key.shift on CSI-u terminals.)
-      if (key.return && key.shift) {
+      // Ctrl+Enter inserts a newline; plain Enter submits. (Ink reports
+      // Ctrl+Enter as key.return + key.ctrl on CSI-u terminals.)
+      if (key.return && key.ctrl) {
         onChange(value.slice(0, cursor) + "\n" + value.slice(cursor));
         setCursor((c) => c + 1);
       } else if (key.return) {
