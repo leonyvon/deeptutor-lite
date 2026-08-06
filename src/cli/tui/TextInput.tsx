@@ -174,20 +174,49 @@ export function TextInput({
     { isActive: focus }
   );
 
+  // Render as a row buffer: pre-wrap the content with our CJK-aware
+  // wrapToLines and render each row separately. CRITICAL: ink's Text
+  // wrapping is word-level (splits on spaces) — a long CJK line without
+  // spaces is treated as one giant word and NEVER wraps, overflowing the
+  // input box. Our wrapToLines is character-level (display-width aware),
+  // so estimated rows (App's countDisplayLines) and rendered rows match.
+  const lines = wrapToLines(shown, contentWidth);
+  // Locate the caret: walk rows accumulating char counts until we reach
+  // `cursor` (character index into `shown`).
+  let caretLine = lines.length - 1;
+  let caretCol = lines[caretLine].length;
+  let acc = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (acc + lines[i].length > cursor) {
+      caretLine = i;
+      caretCol = cursor - acc;
+      break;
+    }
+    acc += lines[i].length;
+  }
+
   return (
-    <Box>
-      <Text color={value ? undefined : theme.textMuted}>
-        {shown.slice(0, cursor)}
-        {focus &&
-          (cursorOn ? (
-            <Text color={theme.accent}>✏️</Text>
+    <Box flexDirection="column">
+      {lines.map((ln, i) => (
+        <Text key={i} wrap="truncate" color={value ? undefined : theme.textMuted}>
+          {i === caretLine ? (
+            <>
+              {ln.slice(0, caretCol)}
+              {focus &&
+                (cursorOn ? (
+                  <Text color={theme.accent}>✏️</Text>
+                ) : (
+                  // Full-width space keeps the caret column width (2) stable
+                  // so the text after it never shifts while blinking.
+                  <Text>　</Text>
+                ))}
+              {ln.slice(caretCol)}
+            </>
           ) : (
-            // Full-width space keeps the caret column width (2) stable so the
-            // text after it never shifts while blinking.
-            <Text>　</Text>
-          ))}
-        {shown.slice(cursor)}
-      </Text>
+            ln
+          )}
+        </Text>
+      ))}
     </Box>
   );
 }
