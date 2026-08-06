@@ -10,7 +10,7 @@
  *   import { inkAsk } from "./cli/tui/ask.js";
  *   const runtime = new DeeptutorRuntime(config, session, inkAsk);
  */
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Box, Text, useInput, useApp, useWindowSize } from "ink";
 import { basename } from "node:path";
 import type { DeeptutorRuntime } from "../../agent/harness.js";
@@ -79,6 +79,41 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   const [menuVisible, setMenuVisible] = useState(false);
   const [thinkingTick, setThinkingTick] = useState(0);
 
+  // Streaming delta batching: accumulate text_delta events and flush them at
+  // most every STREAM_FLUSH_MS, coalescing several tokens per setState. This
+  // is the ink-side equivalent of pi's render throttling — without it, every
+  // token triggers a full React reconciler pass (visible on long replies).
+  const STREAM_FLUSH_MS = 30;
+  const deltaBufRef = useRef("");
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushDeltaBuffer = useCallback(() => {
+    if (flushTimerRef.current) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    const buffered = deltaBufRef.current;
+    deltaBufRef.current = "";
+    if (!buffered) return;
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && last.type === "assistant" && last.streaming) {
+        const next = [...prev];
+        next[next.length - 1] = { ...last, text: last.text + buffered };
+        return next;
+      }
+      return [
+        ...prev,
+        { type: "assistant", text: buffered, streaming: true, id: nextId() },
+      ];
+    });
+  }, []);
+
+  const queueDeltaFlush = useCallback(() => {
+    if (flushTimerRef.current) return;
+    flushTimerRef.current = setTimeout(flushDeltaBuffer, STREAM_FLUSH_MS);
+  }, [flushDeltaBuffer]);
+
   const termWidth = process.stdout.columns ?? 80;
 
   // Input box height grows with the wrapped input (1 top border + content
@@ -125,19 +160,10 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     const unsub = harness.subscribe((event) => {
       if (event.type === "message_update") {
         if (event.assistantMessageEvent.type === "text_delta") {
-          const delta = event.assistantMessageEvent.delta;
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last && last.type === "assistant" && last.streaming) {
-              const next = [...prev];
-              next[next.length - 1] = { ...last, text: last.text + delta };
-              return next;
-            }
-            return [
-              ...prev,
-              { type: "assistant", text: delta, streaming: true, id: nextId() },
-            ];
-          });
+          // Batch tokens into the delta buffer; flush on a timer so we don't
+          // run a React render pass per token (see STREAM_FLUSH_MS above).
+          deltaBufRef.current += event.assistantMessageEvent.delta;
+          queueDeltaFlush();
         }
       } else if (event.type === "tool_execution_start") {
         setMessages((prev) => [
@@ -173,6 +199,8 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
           return next;
         });
       } else if (event.type === "message_end") {
+        // Flush any remaining buffered deltas before finalizing the message.
+        flushDeltaBuffer();
         const msg = event.message;
         if ("stopReason" in msg && msg.stopReason === "error") {
           const errorText =
@@ -192,6 +220,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
           setIsProcessing(false);
         }
       } else if (event.type === "agent_end") {
+        // Flush remaining deltas so the last assistant message is complete
+        // before we clear its streaming flag.
+        flushDeltaBuffer();
         setMessages((prev) => {
           let next = [...prev];
           const last = next[next.length - 1];
@@ -225,8 +256,15 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
         setIsProcessing(false);
       }
     });
-    return unsub;
-  }, [runtime.harness]);
+    return () => {
+      unsub();
+      // Drop any pending batching timer so it can't fire after unmount.
+      if (flushTimerRef.current) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+    };
+  }, [runtime.harness, flushDeltaBuffer, queueDeltaFlush]);
 
   // Subscribe to interactive ask requests from tools
   useEffect(() => {
