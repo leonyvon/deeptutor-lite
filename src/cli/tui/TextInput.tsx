@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput, useStdout } from "ink";
 import { theme } from "./theme.js";
+import { displayWidth, wrapToLines } from "./MessageList.js";
 
 interface TextInputProps {
   value: string;
@@ -9,6 +10,14 @@ interface TextInputProps {
   placeholder?: string;
   focus?: boolean;
   mask?: string;
+  /**
+   * Screen position (1-based row/col) of this input's first text column.
+   * When provided and focused, the real terminal hardware cursor is moved
+   * here and shown instead of the self-drawn ▎ — Windows Terminal then
+   * anchors the IME composition window (pinyin pre-edit) to the input box.
+   */
+  screenRow?: number;
+  screenColBase?: number;
 }
 
 export function TextInput({
@@ -18,7 +27,10 @@ export function TextInput({
   placeholder,
   focus = true,
   mask,
+  screenRow,
+  screenColBase,
 }: TextInputProps): React.ReactElement {
+  const { stdout } = useStdout();
   // Cursor position in characters within `value` (0..value.length).
   const [cursor, setCursor] = useState(value.length);
   // Distinguishes internal edits (keep cursor) from external value changes
@@ -32,6 +44,40 @@ export function TextInput({
     }
     setCursor(value.length);
   }, [value]);
+
+  // Hardware-cursor anchoring: move the real terminal cursor to the input
+  // box's text caret and make it visible. Windows Terminal positions the
+  // IME composition window at the hardware cursor, so the pinyin pre-edit
+  // shows inside the input box instead of at the last written row (bottom
+  // right). Without a screenRow we keep the self-drawn ▎ and leave the
+  // hardware cursor hidden (global ?25l from index.ts).
+  const display = mask ? mask.repeat(value.length) : value;
+  const shown = display || placeholder || "";
+  const contentWidth = Math.max((stdout.columns ?? 80) - 4, 10);
+
+  useEffect(() => {
+    if (screenRow === undefined) return;
+    if (!focus) {
+      stdout.write("\x1b[?25l");
+      return;
+    }
+    const prefixLines = wrapToLines(shown.slice(0, cursor), contentWidth);
+    const lineOffset = Math.max(0, prefixLines.length - 1);
+    const colOffset = displayWidth(prefixLines[prefixLines.length - 1] ?? "");
+    const row = screenRow + lineOffset;
+    const col = (screenColBase ?? 1) + colOffset;
+    stdout.write(`\x1b[${row};${col}H\x1b[?25h`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cursor, focus, value, screenRow, screenColBase]);
+
+  // Hide the hardware cursor again when this input unmounts (e.g. switching
+  // to a picker mode) so it can't linger at the last written row.
+  useEffect(() => {
+    return () => {
+      if (screenRow !== undefined) stdout.write("\x1b[?25l");
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screenRow]);
 
   useInput(
     (input, key) => {
@@ -67,14 +113,13 @@ export function TextInput({
     { isActive: focus }
   );
 
-  const display = mask ? mask.repeat(value.length) : value;
-  const shown = display || placeholder || "";
+  const useHardwareCursor = focus && screenRow !== undefined;
 
   return (
     <Box>
       <Text color={value ? undefined : theme.textMuted}>
         {shown.slice(0, cursor)}
-        {focus && <Text color={theme.accent}>▎</Text>}
+        {!useHardwareCursor && focus && <Text color={theme.accent}>▎</Text>}
         {shown.slice(cursor)}
       </Text>
     </Box>
