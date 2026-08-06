@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import { theme } from "./theme.js";
 import { displayWidth, wrapToLines } from "./MessageList.js";
@@ -18,6 +18,8 @@ interface TextInputProps {
    */
   screenRow?: number;
   screenColBase?: number;
+  /** Pause the caret blink while the user is drag-selecting (SGR mouse). */
+  blinkPaused?: boolean;
 }
 
 export function TextInput({
@@ -29,26 +31,49 @@ export function TextInput({
   mask,
   screenRow,
   screenColBase,
+  blinkPaused = false,
 }: TextInputProps): React.ReactElement {
   const { stdout } = useStdout();
   // Cursor position in characters within `value` (0..value.length).
   const [cursor, setCursor] = useState(value.length);
-  // Blinking pencil caret: toggles every 500ms while focused. The state lives
-  // in THIS component only, so each tick re-renders just the input row (ink
-  // diffs it) — never the message area — leaving mouse text selection intact.
+  // Blinking pencil caret. CRITICAL constraint: any periodic re-render writes
+  // to the terminal and Windows Terminal CLEARS the mouse text selection on
+  // every write — so a blink that runs forever makes drag-select impossible.
+  // Solution: blink only while the user is actively typing; after
+  // BLINK_IDLE_MS of inactivity the caret goes solid (✏️). Typing and
+  // selecting never overlap, so both work.
+  const BLINK_IDLE_MS = 10_000;
+  const [blinking, setBlinking] = useState(true);
   const [cursorOn, setCursorOn] = useState(true);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Distinguishes internal edits (keep cursor) from external value changes
   // like Tab-completion (jump cursor to end).
   const internalEdit = useRef(false);
 
+  // Restart blink on any input activity; stop blinking after idle timeout.
+  const pokeBlink = useCallback(() => {
+    setBlinking(true);
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    idleTimerRef.current = setTimeout(() => setBlinking(false), BLINK_IDLE_MS);
+  }, []);
+
   useEffect(() => {
-    if (!focus) {
+    if (!focus || blinkPaused) {
+      setBlinking(false);
       setCursorOn(true);
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       return;
     }
-    const t = setInterval(() => setCursorOn((v) => !v), 500);
-    return () => clearInterval(t);
-  }, [focus]);
+    pokeBlink();
+    const t = setInterval(() => {
+      setCursorOn((v) => !v);
+    }, 500);
+    return () => {
+      clearInterval(t);
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus, blinkPaused]);
 
   useEffect(() => {
     if (internalEdit.current) {
@@ -95,6 +120,10 @@ export function TextInput({
   useInput(
     (input, key) => {
       if (!focus) return;
+      // SGR mouse sequences (ESC[<...M/m) arrive here as plain text after
+      // ink strips the ESC; they belong to the App's mouse handler, never
+      // to the input value.
+      if (input.startsWith("[<")) return;
       internalEdit.current = true;
 
       if (key.return) {

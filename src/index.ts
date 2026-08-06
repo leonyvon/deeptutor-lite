@@ -56,14 +56,23 @@ async function main(): Promise<void> {
   // Note: 1007 only takes effect in the alternate screen — in the primary
   // buffer the wheel would just scroll the (empty) scrollback.
   if (process.stdout.isTTY) {
-    // Hide the hardware cursor: the TUI renders its own ▎ cursor inside the
+    // Enter the alternate screen + enable SGR mouse tracking (1000=button,
+    // 1002=drag, 1006=SGR encoding). We draw our own text selection in the
+    // message area from these events (Shift+events are consumed by Windows
+    // Terminal for native selection and never forwarded — see
+    // ControlInteractivity::_canSendVTMouseInput). With mouse tracking on,
+    // the wheel arrives as SGR events (64/65) handled by the App, so 1007
+    // (alternate scroll) is no longer needed but stays harmless.
+    // Hide the hardware cursor: the TUI renders its own ✏️ caret inside the
     // input box (TextInput), so the terminal cursor would otherwise stay
     // visible at the last written row (the status bar) and blink there.
-    process.stdout.write("\x1b[?1049h\x1b[?1007h\x1b[?25l");
+    process.stdout.write("\x1b[?1049h\x1b[?1007h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?25l");
     // Restore the terminal on every exit path (Ctrl+C, /quit, crash).
     const restore = () => {
       try {
-        process.stdout.write("\x1b[?25h\x1b[?1007l\x1b[?1049l");
+        process.stdout.write(
+          "\x1b[?25h\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1007l\x1b[?1049l"
+        );
       } catch {
         /* terminal already gone */
       }

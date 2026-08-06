@@ -12,11 +12,14 @@
  */
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Box, Text, useInput, useApp, useWindowSize } from "ink";
+import { spawn } from "node:child_process";
 import { basename } from "node:path";
 import type { DeeptutorRuntime } from "../../agent/harness.js";
 import type { JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import type { UIMessage, AppMode } from "./types.js";
-import { MessageList, totalBufferLines, countDisplayLines } from "./MessageList.js";
+import { MessageList, totalBufferLines, countDisplayLines, extractSelectionText } from "./MessageList.js";
+import type { ScreenSelection } from "./MessageList.js";
+import { parseSgrMouse } from "./mouse.js";
 import { CommandMenu } from "./CommandMenu.js";
 import { TextInput } from "./TextInput.js";
 import { StatusBar } from "./StatusBar.js";
@@ -82,6 +85,12 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   // Triggers a re-render once the async shiki highlighter is ready so code
   // blocks upgrade from the plain markdownCode color to syntax colors.
   const [, setHighlighterReady] = useState(false);
+
+  // App-drawn text selection (SGR mouse mode). While the user drags, the
+  // selection is highlighted by MessageList; on mouse-up the covered text is
+  // copied to the clipboard and the selection is cleared.
+  const [selection, setSelection] = useState<ScreenSelection | null>(null);
+  const [mouseDown, setMouseDown] = useState(false);
 
   // Streaming delta batching: accumulate text_delta events and flush them at
   // most every STREAM_FLUSH_MS, coalescing several tokens per setState. This
@@ -326,6 +335,66 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
       exit();
     }
   });
+
+  // SGR mouse events (enabled in index.ts with ?1000h?1002h?1006h). ink
+  // passes the ESC-stripped sequence (e.g. "[<0;10;20M") as `input` with all
+  // keys false. We draw our own text selection: press starts it, drag grows
+  // it (highlighted by MessageList), release copies the covered text to the
+  // clipboard. Wheel events (64/65) scroll the message area by one row —
+  // with mouse tracking active the terminal no longer translates the wheel
+  // into arrows (1007), so we handle it here.
+  useInput(
+    (input) => {
+      if (!input.startsWith("[<")) return;
+      const events = parseSgrMouse(input);
+      for (const ev of events) {
+        if (ev.kind === "wheel") {
+          if (ev.wheelDir) {
+            setScrollOffset((prev) => clampScroll(prev + ev.wheelDir!));
+          }
+          continue;
+        }
+        if (ev.kind === "press" && ev.button === 0 && !ev.mods) {
+          setMouseDown(true);
+          setSelection({ startX: ev.x, startY: ev.y, endX: ev.x, endY: ev.y });
+          continue;
+        }
+        if (ev.kind === "drag" && ev.button === 0) {
+          if (mouseDown) {
+            setSelection((prev) =>
+              prev
+                ? { ...prev, endX: ev.x, endY: ev.y }
+                : { startX: ev.x, startY: ev.y, endX: ev.x, endY: ev.y }
+            );
+          }
+          continue;
+        }
+        if (ev.kind === "release") {
+          setMouseDown(false);
+          if (selection) {
+            const text = extractSelectionText(
+              messages,
+              termWidth,
+              visibleHeight,
+              scrollOffset,
+              selection
+            );
+            if (text) {
+              try {
+                const clip = spawn("clip.exe", [], { stdio: ["pipe", "ignore", "ignore"] });
+                clip.stdin.write(text);
+                clip.stdin.end();
+              } catch {
+                /* clipboard unavailable — selection still highlighted */
+              }
+            }
+          }
+          setSelection(null);
+        }
+      }
+    },
+    { isActive: mode.type === "chat" && !isProcessing }
+  );
 
   // Auto-follow: when new messages arrive and user is at bottom, stay at bottom
   useEffect(() => {
@@ -780,6 +849,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             messages={messages}
             scrollOffset={scrollOffset}
             visibleHeight={visibleHeight}
+            selection={selection}
           />
           {mode.type === "chat" &&
             isProcessing &&
@@ -1008,6 +1078,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 onSubmit={handleSubmit}
                 placeholder={PLACEHOLDER_TEXT}
                 focus={!isProcessing}
+                blinkPaused={mouseDown}
                 // Anchor the hardware cursor inside the input box so the
                 // Windows Terminal IME composition window (pinyin pre-edit)
                 // follows the caret instead of the last written row.

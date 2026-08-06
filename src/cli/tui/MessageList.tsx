@@ -5,12 +5,98 @@ import { theme } from "./theme.js";
 import { renderMarkdown } from "./markdown.js";
 import type { MdSegment } from "./markdown.js";
 
+export interface ScreenSelection {
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+}
+
 interface MessageListProps {
   messages: UIMessage[];
   /** 0 = at newest (bottom); >0 = shifted up, in terminal ROWS. */
   scrollOffset: number;
   /** Rows available for the message area. */
   visibleHeight: number;
+  /** App-drawn selection in screen coords (1-based); rows highlighted. */
+  selection?: ScreenSelection | null;
+}
+
+/** Content column (0-based) of screen column x: 2-col left padding. */
+const PAD_COLS = 2;
+
+/** First visible buffer row, mirroring MessageList's window math exactly. */
+function viewStartOf(
+  linesLength: number,
+  scrollOffset: number,
+  visibleHeight: number
+): number {
+  const maxScroll = Math.max(0, linesLength - visibleHeight);
+  const offset = Math.min(scrollOffset, maxScroll);
+  return Math.max(0, linesLength - visibleHeight - offset);
+}
+
+/**
+ * Flatten a buffer line into characters with cumulative display columns, so
+ * selection ranges (in content columns) can be applied char-by-char.
+ */
+interface FlattenedChar {
+  ch: string;
+  seg: MdSegment;
+}
+
+function flattenLine(line: BufferLine): { chars: FlattenedChar[]; width: number } {
+  const chars: FlattenedChar[] = [];
+  let width = 0;
+  const segs: MdSegment[] = line.segments ?? [{ text: line.text }];
+  for (const seg of segs) {
+    for (const ch of seg.text) {
+      const w = displayWidth(ch);
+      chars.push({ ch, seg });
+      width += w;
+    }
+  }
+  return { chars, width };
+}
+
+/**
+ * Extract the text covered by a screen-coordinate selection from the message
+ * row buffer. Rows are joined with "\n"; partial rows are sliced by content
+ * columns. Used to copy the selection to the clipboard on mouse-up.
+ */
+export function extractSelectionText(
+  messages: UIMessage[],
+  termWidth: number,
+  visibleHeight: number,
+  scrollOffset: number,
+  selection: ScreenSelection
+): string {
+  const contentWidth = Math.max(termWidth - 4, 20);
+  const lines = buildBufferLines(messages, contentWidth);
+  const viewStart = viewStartOf(lines.length, scrollOffset, visibleHeight);
+  const minY = Math.min(selection.startY, selection.endY);
+  const maxY = Math.max(selection.startY, selection.endY);
+  const minX = Math.min(selection.startX, selection.endX);
+  const maxX = Math.max(selection.startX, selection.endX);
+  const out: string[] = [];
+  for (let y = minY; y <= maxY; y++) {
+    if (y < 1 || y > visibleHeight) continue;
+    const buf = viewStart + (y - 1);
+    if (buf < 0 || buf >= lines.length) continue;
+    const { chars } = flattenLine(lines[buf]);
+    const colStart = y === minY ? Math.max(0, minX - 1 - PAD_COLS) : 0;
+    const colEnd = y === maxY ? Math.max(0, maxX - 1 - PAD_COLS) : Number.POSITIVE_INFINITY;
+    let text = "";
+    let col = 0;
+    for (const c of chars) {
+      const w = displayWidth(c.ch);
+      if (col + w > colEnd) break;
+      if (col >= colStart) text += c.ch;
+      col += w;
+    }
+    out.push(text);
+  }
+  return out.join("\n");
 }
 
 /** True for East Asian wide/fullwidth/emoji code points (2 terminal columns). */
@@ -122,7 +208,61 @@ interface BufferLine {
  * are separated by one spacer row, and the streaming cursor is appended to
  * the last row. Height is always exact — no estimation anywhere.
  */
-function buildBufferLines(messages: UIMessage[], width: number): BufferLine[] {
+
+/**
+ * Render markdown segments with an app-drawn selection applied. `range`
+ * selects content columns [start, end) (0-based, display-width aware);
+ * selected characters get the theme selection background while keeping
+ * their original color/bold/italic styling. Adjacent chars in the same
+ * state are grouped into single <Text> nodes.
+ */
+function applySelection(
+  segments: MdSegment[],
+  range: { start: number; end: number } | null
+): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  let group: { seg: MdSegment; text: string; selected: boolean } | null = null;
+  let col = 0;
+
+  const flush = () => {
+    if (!group) return;
+    const { seg, text, selected } = group;
+    if (selected && range) {
+      nodes.push(
+        <Text
+          color={seg.color}
+          bold={seg.bold}
+          italic={seg.italic}
+          backgroundColor={theme.selection}
+        >
+          {text}
+        </Text>
+      );
+    } else {
+      nodes.push(
+        <Text color={seg.color} bold={seg.bold} italic={seg.italic}>
+          {text}
+        </Text>
+      );
+    }
+    group = null;
+  };
+
+  for (const seg of segments) {
+    for (const ch of seg.text) {
+      const w = displayWidth(ch);
+      const selected = range ? col >= range.start && col < range.end : false;
+      if (!group || group.seg !== seg || group.selected !== selected) {
+        flush();
+        group = { seg, text: "", selected };
+      }
+      group.text += ch;
+      col += w;
+    }
+  }
+  flush();
+  return nodes;
+}function buildBufferLines(messages: UIMessage[], width: number): BufferLine[] {
   const out: BufferLine[] = [];
   messages.forEach((msg, mi) => {
     if (out.length > 0) {
@@ -210,6 +350,7 @@ export function MessageList({
   messages,
   scrollOffset,
   visibleHeight,
+  selection,
 }: MessageListProps): React.ReactElement {
   const termWidth = process.stdout.columns ?? 80;
   const contentWidth = Math.max(termWidth - 4, 20);
@@ -233,9 +374,28 @@ export function MessageList({
   const start = Math.max(0, lines.length - visibleHeight - offset);
   const view = lines.slice(start, start + visibleHeight);
 
+  // Selection (screen coords, 1-based) normalized to content columns for
+  // each visible row. Row content starts at column PAD_COLS+1 on screen.
+  const sel = useMemo(() => {
+    if (!selection) return null;
+    const minY = Math.min(selection.startY, selection.endY);
+    const maxY = Math.max(selection.startY, selection.endY);
+    const minX = Math.min(selection.startX, selection.endX);
+    const maxX = Math.max(selection.startX, selection.endX);
+    return { minY, maxY, minX, maxX };
+  }, [selection]);
+
   return (
     <Box flexDirection="column" flexGrow={1} overflow="hidden">
-      {view.map((line) => {
+      {view.map((line, i) => {
+        const screenY = i + 1;
+        let selRange: { start: number; end: number } | null = null;
+        if (sel && screenY >= sel.minY && screenY <= sel.maxY) {
+          selRange = {
+            start: screenY === sel.minY ? Math.max(0, sel.minX - 1 - PAD_COLS) : 0,
+            end: screenY === sel.maxY ? Math.max(0, sel.maxX - 1 - PAD_COLS) : Number.POSITIVE_INFINITY,
+          };
+        }
         const segs = line.segments;
         return (
         <Box
@@ -247,15 +407,8 @@ export function MessageList({
         >
           {segs ? (
             <Text wrap="truncate">
-              {segs.map((seg, si) => (
-                <Text
-                  key={si}
-                  color={seg.color}
-                  bold={seg.bold}
-                  italic={seg.italic}
-                >
-                  {seg.text}
-                </Text>
+              {applySelection(segs, selRange).map((node, si) => (
+                <React.Fragment key={si}>{node}</React.Fragment>
               ))}
             </Text>
           ) : line.style === "spacer" ? (

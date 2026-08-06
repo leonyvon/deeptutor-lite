@@ -30,6 +30,8 @@ export const theme = {
   border: "#3c3c3c",
   /** Active / focused borders. */
   borderActive: "#5c9cf5",
+  /** App-drawn text-selection background (mouse drag, mouse mode on). */
+  selection: "#3d3d68",
   /** Markdown headings (primary accent). */
   markdownHeading: "#f5a742",
   /** Markdown code spans / code blocks (secondary blue). */
