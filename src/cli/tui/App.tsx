@@ -999,8 +999,15 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 // The command menu sits above the input box inside the same
                 // bottom-anchored container, so it does NOT shift the input
                 // box rows — no menu offset here.
+                // Col: paddingX(1) + "❯ " prefix. ❯ (U+276F) is an East
+                // Asian Ambiguous char rendered WIDE (2 cols) by Windows
+                // Terminal in a CJK locale — ink lays it out as 1 col, so the
+                // real terminal columns differ from ink's. The self-drawn ▎
+                // follows the text and ends up at the wide-char position, so
+                // the hardware anchor must use terminal widths: 1 + 2 + 1 = 4
+                // offset => content starts at 1-based column 5.
                 screenRow={rows - inputAreaHeight + 1}
-                screenColBase={4}
+                screenColBase={5}
               />
             </Box>
           </Box>
