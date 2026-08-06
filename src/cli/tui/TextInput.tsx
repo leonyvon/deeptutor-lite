@@ -577,7 +577,7 @@ export function TextInput({
 
   // ---- Render -------------------------------------------------------------
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" flexShrink={0}>
       {lines.length === 0 ? (
         <Text color={theme.textMuted}>{placeholder ?? ""}</Text>
       ) : (
@@ -588,6 +588,9 @@ export function TextInput({
                 // Filled rectangle placeholder (opencode style): warning
                 // background, dark text, one padding column each side. The
                 // ✏️ caret clamps to the boundary (off 0 = left, off 1 = right).
+                // The block is an atomic token: it must never be compressed or
+                // wrap internally, so flexShrink={0} + wrap="truncate" (an
+                // over-wide label truncates at the line end instead).
                 const isCaretHere = r === caretLoc.row && seg.pi === caret.pi;
                 const caretGlyph =
                   focus && (cursorOn ? (
@@ -598,8 +601,8 @@ export function TextInput({
                 return (
                   <React.Fragment key={seg.id}>
                     {isCaretHere && caret.off === 0 && focus && caretGlyph}
-                    <Box backgroundColor={theme.warning} paddingX={1}>
-                      <Text color={theme.panel} bold>
+                    <Box backgroundColor={theme.warning} paddingX={1} flexShrink={0}>
+                      <Text color={theme.panel} bold wrap="truncate">
                         {seg.label}
                       </Text>
                     </Box>
@@ -620,16 +623,40 @@ export function TextInput({
               const segKey = `${seg.pi}:${seg.offStart}`;
               if (hasCaret) {
                 const local = caret.off - seg.offStart;
+                if (!focus) {
+                  return (
+                    <Text key={segKey} wrap="truncate" color={shownText ? undefined : theme.textMuted}>
+                      {displayText}
+                    </Text>
+                  );
+                }
+                const before = displayText.slice(0, local);
+                const rest = displayText.slice(local);
+                // Overlay caret (opencode block-cursor style): the ✏️ (or the
+                // blink-off 　) REPLACES the next up-to-2 display columns of
+                // text (1 CJK char = 2 cols, or 2 half-width chars) instead of
+                // being inserted between chars — so the row width stays within
+                // buildLines' budget and never pushes the block to a new line.
+                // Only at the very end of a row (rest empty) is the glyph
+                // appended, where an extra 2 cols is absorbed by the row's
+                // slack or clipped by wrap="truncate".
+                let cover = 0;
+                let cw = 0;
+                for (const ch of rest) {
+                  const w = displayWidth(ch);
+                  if (cw + w > 2) break;
+                  cw += w;
+                  cover++;
+                }
                 return (
                   <Text key={segKey} wrap="truncate" color={shownText ? undefined : theme.textMuted}>
-                    {displayText.slice(0, local)}
-                    {focus &&
-                      (cursorOn ? (
-                        <Text color={theme.accent}>✏️</Text>
-                      ) : (
-                        <Text>　</Text>
-                      ))}
-                    {displayText.slice(local)}
+                    {before}
+                    {cursorOn ? (
+                      <Text color={theme.accent}>✏️</Text>
+                    ) : (
+                      <Text>　</Text>
+                    )}
+                    {rest.slice(cover)}
                   </Text>
                 );
               }
