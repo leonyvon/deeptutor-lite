@@ -52,7 +52,7 @@ export function StatusBar({
       >
         <Box flexDirection="row" gap={1}>
           <Text bold color={theme.accent} backgroundColor={theme.panel}>
-            [Tutor]
+            [deeptutor-lite]
           </Text>
           <Text color={theme.textMuted}>@ {model.providerName}</Text>
           <Text color={theme.textMuted}>| KB: {kb}</Text>

@@ -388,9 +388,8 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 /* clipboard unavailable — selection still highlighted */
               }
             }
-            // Keep the selection highlighted after release (like native
-            // selection); the next press replaces it.
           }
+          setSelection(null);
         }
       }
     },
