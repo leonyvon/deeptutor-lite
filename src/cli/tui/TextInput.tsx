@@ -81,7 +81,7 @@ export function TextInput({
     const col = (screenColBase ?? 1) + colOffset;
     stdout.write(`\x1b[${row};${col}H\x1b[?25l`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cursor, focus, value, screenRow, screenColBase]);
+  }, [cursor, focus, value, screenRow, screenColBase, cursorOn]);
 
   // Keep the hardware cursor hidden when this input unmounts (e.g. switching
   // to a picker mode) so it can't linger at the last written row.
