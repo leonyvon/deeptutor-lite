@@ -2,6 +2,8 @@ import React, { useMemo } from "react";
 import { Box, Text } from "ink";
 import type { UIMessage } from "./types.js";
 import { theme } from "./theme.js";
+import { renderMarkdown } from "./markdown.js";
+import type { MdSegment } from "./markdown.js";
 
 interface MessageListProps {
   messages: UIMessage[];
@@ -110,6 +112,8 @@ interface BufferLine {
   key: string;
   style: LineStyle;
   text: string;
+  /** Styled markdown fragments; when present they take precedence over `text`. */
+  segments?: MdSegment[];
 }
 
 /**
@@ -136,19 +140,38 @@ function buildBufferLines(messages: UIMessage[], width: number): BufferLine[] {
         style: isErr ? "error" : "tutor",
         text: isErr ? "Error" : "Tutor",
       });
-      const body = wrapToLines(msg.text, width);
-      if (msg.streaming && body.length > 0) body[body.length - 1] += "▎";
       const bodyStyle: LineStyle = isErr
         ? "error"
         : msg.streaming
           ? "assistant-streaming"
           : "assistant";
-      for (const ln of body) {
-        out.push({
-          key: `${mi}-a-${out.length}`,
-          style: bodyStyle,
-          text: ln,
-        });
+      if (isErr) {
+        // Errors stay plain text (no markdown interpretation).
+        const body = wrapToLines(msg.text, width);
+        if (msg.streaming && body.length > 0) body[body.length - 1] += "▎";
+        for (const ln of body) {
+          out.push({ key: `${mi}-a-${out.length}`, style: bodyStyle, text: ln });
+        }
+      } else {
+        const mdLines = renderMarkdown(msg.text, width);
+        for (const [li, line] of mdLines.entries()) {
+          let segments = line.segments;
+          if (msg.streaming && li === mdLines.length - 1) {
+            // Streaming cursor: append to the last fragment of the last row.
+            const lastSeg = segments[segments.length - 1];
+            segments = lastSeg
+              ? segments
+                  .slice(0, -1)
+                  .concat([{ ...lastSeg, text: lastSeg.text + "▎" }])
+              : [{ text: "▎" }];
+          }
+          out.push({
+            key: `${mi}-a-${out.length}`,
+            style: bodyStyle,
+            text: "",
+            segments,
+          });
+        }
       }
     } else if (msg.type === "tool") {
       const icon =
@@ -214,7 +237,20 @@ export function MessageList({
           width={termWidth}
           paddingX={1}
         >
-          {line.style === "spacer" ? (
+          {line.segments ? (
+            <Text wrap="truncate">
+              {line.segments.map((seg, si) => (
+                <Text
+                  key={si}
+                  color={seg.color}
+                  bold={seg.bold}
+                  italic={seg.italic}
+                >
+                  {seg.text}
+                </Text>
+              ))}
+            </Text>
+          ) : line.style === "spacer" ? (
             <Text> </Text>
           ) : line.style === "user-label" ? (
             <Text bold color={theme.primary}>

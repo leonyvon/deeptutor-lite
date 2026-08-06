@@ -30,6 +30,16 @@ export const theme = {
   border: "#3c3c3c",
   /** Active / focused borders. */
   borderActive: "#5c9cf5",
+  /** Markdown headings (primary accent). */
+  markdownHeading: "#f5a742",
+  /** Markdown code spans / code blocks (secondary blue). */
+  markdownCode: "#5c9cf5",
+  /** Markdown links (secondary blue). */
+  markdownLink: "#5c9cf5",
+  /** Markdown blockquote markers (muted gray). */
+  markdownBlockQuote: "#808080",
+  /** Markdown horizontal rules (border gray). */
+  markdownHr: "#3c3c3c",
 } as const;
 
 export type Theme = typeof theme;
