@@ -303,36 +303,33 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     return unsub;
   }, []);
 
-  // Scroll handling: ↑/↓ and PgUp/PgDn when in chat mode and not processing.
-  // We deliberately do NOT enable SGR mouse tracking (xterm 1000/1006): that
-  // would steal mouse events from the terminal and break click-drag text
-  // selection. Instead we enable Alternate Scroll (xterm 1007) — the terminal
-  // then translates the wheel into ↑/↓ arrow keys for us while leaving mouse
-  // selection to the terminal itself (pi/opencode do the same).
-  // Scroll offset is per terminal row (the message area is a flat row buffer,
-  // exactly like pi's chat container) — so the wheel scrolls 1 row at a time,
-  // never whole messages.
+  // Scroll handling: only PgUp/PgDn scroll the message area; ↑/↓ belong to
+  // the input box (caret movement across wrapped lines). The wheel still
+  // scrolls via SGR mouse events (handled below). While the slash-command
+  // palette is open, ↑/↓ belong to menu navigation (separate handler).
   useInput(
     (input, key) => {
-      // While the slash-command palette is open, ↑/↓ belong to menu navigation.
       if (menuOpen) return;
       if (key.pageUp) {
         setScrollOffset((prev) => clampScroll(prev + Math.max(5, Math.floor(visibleHeight * 0.3))));
       } else if (key.pageDown) {
         setScrollOffset((prev) => clampScroll(prev - Math.max(5, Math.floor(visibleHeight * 0.3))));
-      } else if (key.upArrow) {
-        setScrollOffset((prev) => clampScroll(prev + 1));
-      } else if (key.downArrow) {
-        setScrollOffset((prev) => clampScroll(prev - 1));
       }
     },
     { isActive: mode.type === "chat" && !isProcessing }
   );
 
-  // Global Ctrl+C exit
-  useInput((input, key) => {
-    if (key.ctrl && input === "c") {
-      exit();
+  // Ctrl+C: clear the input box when it has content; exit only when empty
+  // (and not inside a picker/menu).
+  useInput((char, key) => {
+    if (key.ctrl && char === "c") {
+      if (mode.type === "chat" && input.length > 0) {
+        setInput("");
+        setMenuVisible(false);
+        setMenuIndex(0);
+      } else {
+        exit();
+      }
     }
   });
 
@@ -1079,6 +1076,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 placeholder={PLACEHOLDER_TEXT}
                 focus={!isProcessing}
                 blinkPaused={mouseDown}
+                menuOpen={menuOpen}
                 // Anchor the hardware cursor inside the input box so the
                 // Windows Terminal IME composition window (pinyin pre-edit)
                 // follows the caret instead of the last written row.

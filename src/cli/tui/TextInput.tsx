@@ -20,6 +20,8 @@ interface TextInputProps {
   screenColBase?: number;
   /** Pause the caret blink while the user is drag-selecting (SGR mouse). */
   blinkPaused?: boolean;
+  /** When a dropdown/menu is open, ↑/↓ belong to it, not the caret. */
+  menuOpen?: boolean;
 }
 
 export function TextInput({
@@ -32,6 +34,7 @@ export function TextInput({
   screenRow,
   screenColBase,
   blinkPaused = false,
+  menuOpen = false,
 }: TextInputProps): React.ReactElement {
   const { stdout } = useStdout();
   // Cursor position in characters within `value` (0..value.length).
@@ -135,6 +138,44 @@ export function TextInput({
     { isActive: focus }
   );
 
+  // ↑/↓: move the caret across wrapped lines. When a menu/dropdown is open
+  // the arrows belong to the menu (menuOpen), not the caret.
+  const moveLine = useCallback(
+    (dir: 1 | -1) => {
+      if (menuOpen) return;
+      const lines = wrapToLines(shown, contentWidth);
+      if (lines.length <= 1) return;
+      // Locate the caret's current line & column (display width).
+      let lineIdx = 0;
+      let acc = 0;
+      for (let i = 0; i < lines.length; i++) {
+        if (acc + lines[i].length > cursor) {
+          lineIdx = i;
+          break;
+        }
+        acc += lines[i].length;
+      }
+      const target = lineIdx + dir;
+      if (target < 0 || target >= lines.length) return;
+      const inLine = cursor - acc;
+      const col = displayWidth(lines[lineIdx].slice(0, inLine));
+      // Find the character in the target line closest to `col`.
+      const targetStart = lines
+        .slice(0, target)
+        .reduce((s, l) => s + l.length, 0);
+      let t = 0;
+      let tw = 0;
+      for (const ch of lines[target]) {
+        const w = displayWidth(ch);
+        if (tw + w > col) break;
+        tw += w;
+        t++;
+      }
+      setCursor(targetStart + t);
+    },
+    [shown, contentWidth, cursor, menuOpen]
+  );
+
   useInput(
     (input, key) => {
       if (!focus) return;
@@ -145,8 +186,17 @@ export function TextInput({
 
       internalEdit.current = true;
 
-      if (key.return) {
+      // Shift+Enter inserts a newline; plain Enter submits. (Ink reports
+      // Shift+Enter as key.return + key.shift on CSI-u terminals.)
+      if (key.return && key.shift) {
+        onChange(value.slice(0, cursor) + "\n" + value.slice(cursor));
+        setCursor((c) => c + 1);
+      } else if (key.return) {
         onSubmit(value);
+      } else if (key.upArrow) {
+        moveLine(-1);
+      } else if (key.downArrow) {
+        moveLine(1);
       } else if (key.leftArrow) {
         setCursor((c) => Math.max(0, c - 1));
       } else if (key.rightArrow) {
