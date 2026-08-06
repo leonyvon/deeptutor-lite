@@ -767,7 +767,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             isProcessing &&
             !streamingInProgress && (
               <Box marginTop={1} flexShrink={0}>
-                <Text color={theme.accent} dimColor>
+                <Text color={theme.textMuted}>
                   {THINKING_FRAMES[thinkingTick % THINKING_FRAMES.length]}{" "}
                   thinking…
                 </Text>
@@ -975,10 +975,11 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             borderStyle="single"
             borderTop
             borderColor={theme.borderActive}
+            backgroundColor={theme.panel}
             paddingX={1}
           >
             <Box flexDirection="row">
-              <Text color={theme.primary}>{isProcessing ? "⋯ " : "> "}</Text>
+              <Text color={theme.primary}>{isProcessing ? "⋯ " : "❯ "}</Text>
               <TextInput
                 value={input}
                 onChange={(v) => {

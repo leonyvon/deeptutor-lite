@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { Box, Text } from "ink";
 import type { UIMessage } from "./types.js";
 import { theme } from "./theme.js";
@@ -203,7 +203,7 @@ function buildBufferLines(messages: UIMessage[], width: number): BufferLine[] {
  * Used by the App to clamp scrollOffset to a per-row ceiling.
  */
 export function totalBufferLines(messages: UIMessage[], termWidth: number): number {
-  return buildBufferLines(messages, Math.max(termWidth - 2, 20)).length;
+  return buildBufferLines(messages, Math.max(termWidth - 4, 20)).length;
 }
 
 export function MessageList({
@@ -212,7 +212,22 @@ export function MessageList({
   visibleHeight,
 }: MessageListProps): React.ReactElement {
   const termWidth = process.stdout.columns ?? 80;
-  const contentWidth = Math.max(termWidth - 2, 20);
+  const contentWidth = Math.max(termWidth - 4, 20);
+
+  // Streaming cursor blink: toggle every 500ms while any assistant message is
+  // streaming, so the trailing "▎" flashes instead of staying lit.
+  const hasStreaming = messages.some(
+    (m) => m.type === "assistant" && m.streaming === true
+  );
+  const [cursorOn, setCursorOn] = useState(true);
+  useEffect(() => {
+    if (!hasStreaming) {
+      setCursorOn(true);
+      return;
+    }
+    const t = setInterval(() => setCursorOn((v) => !v), 500);
+    return () => clearInterval(t);
+  }, [hasStreaming]);
 
   const lines = useMemo(
     () => buildBufferLines(messages, contentWidth),
@@ -229,26 +244,39 @@ export function MessageList({
 
   return (
     <Box flexDirection="column" flexGrow={1} overflow="hidden">
-      {view.map((line) => (
+      {view.map((line) => {
+        const segs = line.segments;
+        return (
         <Box
           key={line.key}
           height={1}
           flexShrink={0}
           width={termWidth}
-          paddingX={1}
+          paddingX={2}
         >
-          {line.segments ? (
+          {segs ? (
             <Text wrap="truncate">
-              {line.segments.map((seg, si) => (
-                <Text
-                  key={si}
-                  color={seg.color}
-                  bold={seg.bold}
-                  italic={seg.italic}
-                >
-                  {seg.text}
-                </Text>
-              ))}
+              {segs.map((seg, si) => {
+                // Blink the streaming cursor: hide the trailing "▎" half the time.
+                let text = seg.text;
+                if (
+                  !cursorOn &&
+                  si === segs.length - 1 &&
+                  text.endsWith("▎")
+                ) {
+                  text = text.slice(0, -1);
+                }
+                return (
+                  <Text
+                    key={si}
+                    color={seg.color}
+                    bold={seg.bold}
+                    italic={seg.italic}
+                  >
+                    {text}
+                  </Text>
+                );
+              })}
             </Text>
           ) : line.style === "spacer" ? (
             <Text> </Text>
@@ -257,7 +285,7 @@ export function MessageList({
               You
             </Text>
           ) : line.style === "tutor" ? (
-            <Text bold color={theme.text}>
+            <Text bold color={theme.accent}>
               Tutor
             </Text>
           ) : line.style === "error" ? (
@@ -277,16 +305,19 @@ export function MessageList({
               {line.text}
             </Text>
           ) : line.style === "user" ? (
-            <Text wrap="truncate">{line.text}</Text>
+            <Text color={theme.primary} wrap="truncate">
+              {line.text}
+            </Text>
           ) : line.style === "assistant-streaming" ? (
             <Text wrap="truncate">{line.text}</Text>
           ) : (
-            <Text color={theme.textMuted} wrap="truncate">
+            <Text color={theme.text} wrap="truncate">
               {line.text}
             </Text>
           )}
         </Box>
-      ))}
+        );
+      })}
     </Box>
   );
 }

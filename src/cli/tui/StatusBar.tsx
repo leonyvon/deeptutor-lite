@@ -28,13 +28,16 @@ export function StatusBar({
       backgroundColor={theme.panel}
     >
       <Box flexDirection="row" gap={1}>
-        <Text color={theme.accent}>
-          {isProcessing ? "⋯" : "✓"} {model.modelName}
+        <Text bold color={theme.accent} backgroundColor={theme.panel}>
+          [Tutor]
         </Text>
         <Text color={theme.textMuted}>@ {model.providerName}</Text>
         <Text color={theme.textMuted}>| KB: {kb}</Text>
       </Box>
       <Box flexDirection="row" gap={1}>
+        <Text color={theme.text}>
+          {isProcessing ? "⋯" : "✓"} {model.modelName}
+        </Text>
         {scrollInfo && <Text color={theme.textMuted}>{scrollInfo}</Text>}
         <Text color={theme.textMuted}>{sessionPath}</Text>
         <Text color={theme.textMuted}>Ctrl+C exit</Text>
