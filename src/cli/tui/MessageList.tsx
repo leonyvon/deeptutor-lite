@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import { Box, Text } from "ink";
 import type { UIMessage } from "./types.js";
+import { theme } from "./theme.js";
 
 interface MessageListProps {
   messages: UIMessage[];
@@ -98,6 +99,7 @@ type LineStyle =
   | "user"
   | "tutor"
   | "assistant"
+  | "assistant-streaming"
   | "error"
   | "tool-running"
   | "tool-success"
@@ -136,10 +138,15 @@ function buildBufferLines(messages: UIMessage[], width: number): BufferLine[] {
       });
       const body = wrapToLines(msg.text, width);
       if (msg.streaming && body.length > 0) body[body.length - 1] += "▎";
+      const bodyStyle: LineStyle = isErr
+        ? "error"
+        : msg.streaming
+          ? "assistant-streaming"
+          : "assistant";
       for (const ln of body) {
         out.push({
           key: `${mi}-a-${out.length}`,
-          style: isErr ? "error" : "assistant",
+          style: bodyStyle,
           text: ln,
         });
       }
@@ -210,33 +217,35 @@ export function MessageList({
           {line.style === "spacer" ? (
             <Text> </Text>
           ) : line.style === "user-label" ? (
-            <Text bold color="cyan">
+            <Text bold color={theme.primary}>
               You
             </Text>
           ) : line.style === "tutor" ? (
-            <Text bold color="white">
+            <Text bold color={theme.text}>
               Tutor
             </Text>
           ) : line.style === "error" ? (
-            <Text bold color="red">
+            <Text bold color={theme.error}>
               {line.text}
             </Text>
           ) : line.style === "tool-running" ? (
-            <Text color="yellow" wrap="truncate">
+            <Text color={theme.warning} wrap="truncate">
               {line.text}
             </Text>
           ) : line.style === "tool-success" ? (
-            <Text color="green" wrap="truncate">
+            <Text color={theme.success} wrap="truncate">
               {line.text}
             </Text>
           ) : line.style === "tool-error" ? (
-            <Text color="red" wrap="truncate">
+            <Text color={theme.error} wrap="truncate">
               {line.text}
             </Text>
           ) : line.style === "user" ? (
             <Text wrap="truncate">{line.text}</Text>
+          ) : line.style === "assistant-streaming" ? (
+            <Text wrap="truncate">{line.text}</Text>
           ) : (
-            <Text color="gray" wrap="truncate">
+            <Text color={theme.textMuted} wrap="truncate">
               {line.text}
             </Text>
           )}

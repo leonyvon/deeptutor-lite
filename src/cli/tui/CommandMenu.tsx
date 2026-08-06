@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { theme } from "./theme.js";
 
 export interface CommandMenuItem {
   name: string;
@@ -36,7 +37,7 @@ export function CommandMenu({
       width={44}
       padding={1}
       borderStyle="single"
-      borderColor="cyan"
+      borderColor={theme.borderActive}
       marginBottom={1}
       flexShrink={0}
     >
@@ -45,16 +46,16 @@ export function CommandMenu({
         const isSelected = idx === selectedIndex;
         return (
           <Box key={cmd.name} flexDirection="row">
-            <Text color={isSelected ? "cyan" : undefined}>
+            <Text color={isSelected ? theme.accent : undefined}>
               {isSelected ? "> " : "  "}
               {cmd.name}
             </Text>
-            <Text dimColor> {cmd.desc}</Text>
+            <Text color={theme.textMuted}> {cmd.desc}</Text>
           </Box>
         );
       })}
       <Box marginTop={1}>
-        <Text dimColor>↑↓ · tab · enter · esc</Text>
+        <Text color={theme.textMuted}>↑↓ · tab · enter · esc</Text>
       </Box>
     </Box>
   );

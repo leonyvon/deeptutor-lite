@@ -2,6 +2,7 @@ import React, { useMemo } from "react";
 import { Box, Text, useInput } from "ink";
 import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
 import { basename } from "node:path";
+import { theme } from "./theme.js";
 
 const WINDOW_SIZE = 8;
 
@@ -59,10 +60,10 @@ export function SessionPicker({
       flexDirection="column"
       padding={1}
       borderStyle="single"
-      borderColor="green"
+      borderColor={theme.border}
       width={70}
     >
-      <Text bold color="green">
+      <Text bold color={theme.accent}>
         Select Session
       </Text>
       <Box flexDirection="column" marginTop={1}>
@@ -77,13 +78,13 @@ export function SessionPicker({
             preview.length > 36 ? preview.slice(0, 36) + "…" : preview;
           return (
             <Box key={s.path} flexDirection="row">
-              <Text color={globalIdx === selectedIndex ? "green" : undefined}>
+              <Text color={globalIdx === selectedIndex ? theme.accent : undefined}>
                 {globalIdx === selectedIndex ? "> " : "  "}
                 {isCurrent ? "▶ " : "  "}
                 {mainText}
               </Text>
               {time && (
-                <Text dimColor>
+                <Text color={theme.textMuted}>
                   {" "}
                   {time}
                 </Text>
@@ -93,14 +94,14 @@ export function SessionPicker({
         })}
         {sessions.length > WINDOW_SIZE && (
           <Box marginTop={1}>
-            <Text dimColor>
+            <Text color={theme.textMuted}>
               (showing {visibleSessions.length} of {sessions.length})
             </Text>
           </Box>
         )}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>↑↓ navigate · enter select · esc cancel</Text>
+        <Text color={theme.textMuted}>↑↓ navigate · enter select · esc cancel</Text>
       </Box>
     </Box>
   );

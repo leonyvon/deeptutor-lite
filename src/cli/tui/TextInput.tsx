@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Box, Text, useInput } from "ink";
+import { theme } from "./theme.js";
 
 interface TextInputProps {
   value: string;
@@ -71,9 +72,9 @@ export function TextInput({
 
   return (
     <Box>
-      <Text color={value ? undefined : "gray"}>
+      <Text color={value ? undefined : theme.textMuted}>
         {shown.slice(0, cursor)}
-        {focus && <Text color="cyan">▎</Text>}
+        {focus && <Text color={theme.accent}>▎</Text>}
         {shown.slice(cursor)}
       </Text>
     </Box>

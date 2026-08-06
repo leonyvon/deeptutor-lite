@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { Box, Text, useInput } from "ink";
 import type { DeeptutorRuntime, ModelChoice } from "../../agent/harness.js";
 import { TextInput } from "./TextInput.js";
+import { theme } from "./theme.js";
 
 const OPENAI_COMPAT_ID = "openai-compat";
 const WINDOW_SIZE = 10;
@@ -192,10 +193,10 @@ export function ModelPicker({
       flexDirection="column"
       padding={1}
       borderStyle="single"
-      borderColor="cyan"
+      borderColor={theme.border}
       width={70}
     >
-      <Text bold color="cyan">
+      <Text bold color={theme.accent}>
         {step === "provider"
           ? "Select Provider"
           : step === "apikey"
@@ -212,7 +213,7 @@ export function ModelPicker({
           <Box flexDirection="column">
             {/* Search box */}
             <Box marginBottom={1}>
-              <Text dimColor>Search: </Text>
+              <Text color={theme.textMuted}>Search: </Text>
               <TextInput
                 value={searchQuery}
                 onChange={onChangeSearchQuery}
@@ -229,10 +230,10 @@ export function ModelPicker({
                 a && a.needsKey ? (a.configured ? " ✓" : " (needs key)") : "";
               return (
                 <Box key={p.id}>
-                  <Text color={globalIdx === selectedIndex ? "cyan" : undefined}>
+                  <Text color={globalIdx === selectedIndex ? theme.accent : undefined}>
                     {globalIdx === selectedIndex ? "> " : "  "}
                     {p.name}
-                    <Text dimColor>{authLabel}</Text>
+                    <Text color={theme.textMuted}>{authLabel}</Text>
                   </Text>
                 </Box>
               );
@@ -240,14 +241,14 @@ export function ModelPicker({
             {/* Count indicator */}
             {filteredProviders.length > 0 && (
               <Box marginTop={1}>
-                <Text dimColor>
+                <Text color={theme.textMuted}>
                   (showing {visibleProviders.length} of {filteredProviders.length})
                 </Text>
               </Box>
             )}
             {filteredProviders.length === 0 && (
               <Box marginTop={1}>
-                <Text dimColor>(no matches)</Text>
+                <Text color={theme.textMuted}>(no matches)</Text>
               </Box>
             )}
           </Box>
@@ -256,10 +257,10 @@ export function ModelPicker({
         {/* ---- API key input ---- */}
         {step === "apikey" && providerId && (
           <Box flexDirection="column">
-            <Text dimColor>
+            <Text color={theme.textMuted}>
               Enter API key for {providers.find((p) => p.id === providerId)?.name ?? providerId}
             </Text>
-            <Text dimColor>(saved to ~/.deeptutor/auth.json)</Text>
+            <Text color={theme.textMuted}>(saved to ~/.deeptutor/auth.json)</Text>
             <Box marginTop={1}>
               <TextInput
                 value={apiKeyValue}
@@ -272,7 +273,7 @@ export function ModelPicker({
             </Box>
             {currentAuth && (
               <Box marginTop={1}>
-                <Text dimColor>Current source: {currentAuth.source}</Text>
+                <Text color={theme.textMuted}>Current source: {currentAuth.source}</Text>
               </Box>
             )}
           </Box>
@@ -283,7 +284,7 @@ export function ModelPicker({
           <Box flexDirection="column">
             {/* Search box */}
             <Box marginBottom={1}>
-              <Text dimColor>Search: </Text>
+              <Text color={theme.textMuted}>Search: </Text>
               <TextInput
                 value={searchQuery}
                 onChange={onChangeSearchQuery}
@@ -300,10 +301,10 @@ export function ModelPicker({
                 a && a.needsKey ? (a.configured ? " ✓" : " (needs key)") : "";
               return (
                 <Box key={`${c.providerId}-${c.modelId}`}>
-                  <Text color={globalIdx === selectedIndex ? "cyan" : undefined}>
+                  <Text color={globalIdx === selectedIndex ? theme.accent : undefined}>
                     {globalIdx === selectedIndex ? "> " : "  "}
                     {`${c.modelName}${c.reasoning ? " (reasoning)" : ""}`}
-                    <Text dimColor>{authLabel}</Text>
+                    <Text color={theme.textMuted}>{authLabel}</Text>
                   </Text>
                 </Box>
               );
@@ -311,21 +312,21 @@ export function ModelPicker({
             {/* Count indicator */}
             {filteredChoices.length > 0 && (
               <Box marginTop={1}>
-                <Text dimColor>
+                <Text color={theme.textMuted}>
                   (showing {visibleChoices.length} of {filteredChoices.length})
                 </Text>
               </Box>
             )}
             {filteredChoices.length === 0 && (
               <Box marginTop={1}>
-                <Text dimColor>(no matches)</Text>
+                <Text color={theme.textMuted}>(no matches)</Text>
               </Box>
             )}
           </Box>
         )}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>
+        <Text color={theme.textMuted}>
           {step === "apikey"
             ? "enter submit · esc cancel"
             : "↑↓ navigate · enter select · esc back/clear"}

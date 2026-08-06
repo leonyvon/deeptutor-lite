@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { DeeptutorRuntime } from "../../agent/harness.js";
+import { theme } from "./theme.js";
 
 interface BraveConfigProps {
   runtime: DeeptutorRuntime;
@@ -83,16 +84,16 @@ export function BraveConfig({
       flexDirection="column"
       padding={1}
       borderStyle="single"
-      borderColor="yellow"
+      borderColor={theme.border}
       width={60}
     >
-      <Text bold color="yellow">
+      <Text bold color={theme.accent}>
         Brave Search Configuration
       </Text>
       <Box flexDirection="column" marginTop={1}>
         {FIELDS.map((field, i) => (
           <Box key={i}>
-            <Text color={i === selectedIndex ? "yellow" : undefined}>
+            <Text color={i === selectedIndex ? theme.accent : undefined}>
               {i === selectedIndex ? "> " : "  "}
               {field.label}:{" "}
               {editing && i === selectedIndex
@@ -109,7 +110,7 @@ export function BraveConfig({
         ))}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>
+        <Text color={theme.textMuted}>
           {editing
             ? "enter save · esc cancel"
             : "↑↓ navigate · enter edit · esc finish"}

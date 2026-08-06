@@ -26,6 +26,7 @@ import { SessionPicker } from "./SessionPicker.js";
 import { AskPicker } from "./AskPicker.js";
 import { subscribeAsk, getPendingAsk, resolveAsk } from "./ask.js";
 import { sessionEntriesToMessages, loadSessionPreview } from "./history.js";
+import { theme } from "./theme.js";
 
 let idCounter = 0;
 function nextId(): string {
@@ -716,7 +717,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             isProcessing &&
             !streamingInProgress && (
               <Box marginTop={1} flexShrink={0}>
-                <Text color="cyan" dimColor>
+                <Text color={theme.accent} dimColor>
                   {THINKING_FRAMES[thinkingTick % THINKING_FRAMES.length]}{" "}
                   thinking…
                 </Text>
@@ -923,11 +924,11 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             flexShrink={0}
             borderStyle="single"
             borderTop
-            borderColor="gray"
+            borderColor={theme.borderActive}
             paddingX={1}
           >
             <Box flexDirection="row">
-              <Text color="cyan">{isProcessing ? "⋯ " : "> "}</Text>
+              <Text color={theme.primary}>{isProcessing ? "⋯ " : "> "}</Text>
               <TextInput
                 value={input}
                 onChange={(v) => {

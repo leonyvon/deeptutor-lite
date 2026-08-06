@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import { Box, Text, useInput } from "ink";
 import { resolveAsk } from "./ask.js";
+import { theme } from "./theme.js";
 
 const WINDOW_SIZE = 8;
 
@@ -48,10 +49,10 @@ export function AskPicker({
       flexDirection="column"
       padding={1}
       borderStyle="single"
-      borderColor="blue"
+      borderColor={theme.border}
       marginY={1}
     >
-      <Text bold color="blue">
+      <Text bold color={theme.accent}>
         {question}
       </Text>
       <Box flexDirection="column" marginTop={1}>
@@ -59,7 +60,7 @@ export function AskPicker({
           const globalIdx = windowStart + i;
           return (
             <Box key={label}>
-              <Text color={globalIdx === selectedIndex ? "blue" : undefined}>
+              <Text color={globalIdx === selectedIndex ? theme.accent : undefined}>
                 {globalIdx === selectedIndex ? "> " : "  "}
                 {label}) {text}
               </Text>
@@ -68,14 +69,14 @@ export function AskPicker({
         })}
         {entries.length > WINDOW_SIZE && (
           <Box marginTop={1}>
-            <Text dimColor>
+            <Text color={theme.textMuted}>
               (showing {visibleEntries.length} of {entries.length})
             </Text>
           </Box>
         )}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>↑↓ navigate · enter select · esc cancel</Text>
+        <Text color={theme.textMuted}>↑↓ navigate · enter select · esc cancel</Text>
       </Box>
     </Box>
   );
