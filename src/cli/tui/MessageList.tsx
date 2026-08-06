@@ -214,20 +214,11 @@ export function MessageList({
   const termWidth = process.stdout.columns ?? 80;
   const contentWidth = Math.max(termWidth - 4, 20);
 
-  // Streaming cursor blink: toggle every 500ms while any assistant message is
-  // streaming, so the trailing "▎" flashes instead of staying lit.
-  const hasStreaming = messages.some(
-    (m) => m.type === "assistant" && m.streaming === true
-  );
-  const [cursorOn, setCursorOn] = useState(true);
-  useEffect(() => {
-    if (!hasStreaming) {
-      setCursorOn(true);
-      return;
-    }
-    const t = setInterval(() => setCursorOn((v) => !v), 500);
-    return () => clearInterval(t);
-  }, [hasStreaming]);
+  // NOTE: no blink timer here. A 500ms cursorOn toggle would trigger a full
+  // ink re-render every half second while streaming, which in Windows
+  // Terminal keeps clearing the mouse text selection — making it impossible
+  // to drag-select. The trailing "▎" stays lit; re-renders happen only on
+  // delta flushes (content changes), which is what we want.
 
   const lines = useMemo(
     () => buildBufferLines(messages, contentWidth),
@@ -256,27 +247,16 @@ export function MessageList({
         >
           {segs ? (
             <Text wrap="truncate">
-              {segs.map((seg, si) => {
-                // Blink the streaming cursor: hide the trailing "▎" half the time.
-                let text = seg.text;
-                if (
-                  !cursorOn &&
-                  si === segs.length - 1 &&
-                  text.endsWith("▎")
-                ) {
-                  text = text.slice(0, -1);
-                }
-                return (
-                  <Text
-                    key={si}
-                    color={seg.color}
-                    bold={seg.bold}
-                    italic={seg.italic}
-                  >
-                    {text}
-                  </Text>
-                );
-              })}
+              {segs.map((seg, si) => (
+                <Text
+                  key={si}
+                  color={seg.color}
+                  bold={seg.bold}
+                  italic={seg.italic}
+                >
+                  {seg.text}
+                </Text>
+              ))}
             </Text>
           ) : line.style === "spacer" ? (
             <Text> </Text>

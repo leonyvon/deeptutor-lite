@@ -349,6 +349,24 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     }
   }, [isProcessing, streamingInProgress]);
 
+  // Streaming-residue safety net: if processing ends without a proper
+  // agent_end (interrupted/aborted event stream), the last assistant message
+  // could stay marked streaming forever, leaving a trailing "▎" and keeping
+  // the blink-era re-render machinery alive. Clear the flag on any
+  // processing end so the cursor can never linger.
+  useEffect(() => {
+    if (isProcessing) return;
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && last.type === "assistant" && last.streaming) {
+        const next = [...prev];
+        next[next.length - 1] = { ...last, streaming: false };
+        return next;
+      }
+      return prev;
+    });
+  }, [isProcessing]);
+
   // Slash command dropdown palette state
   const menuOpen =
     mode.type === "chat" && input.trim().startsWith("/") && menuVisible;
