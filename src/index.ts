@@ -56,11 +56,14 @@ async function main(): Promise<void> {
   // Note: 1007 only takes effect in the alternate screen — in the primary
   // buffer the wheel would just scroll the (empty) scrollback.
   if (process.stdout.isTTY) {
-    process.stdout.write("\x1b[?1049h\x1b[?1007h");
+    // Hide the hardware cursor: the TUI renders its own ▎ cursor inside the
+    // input box (TextInput), so the terminal cursor would otherwise stay
+    // visible at the last written row (the status bar) and blink there.
+    process.stdout.write("\x1b[?1049h\x1b[?1007h\x1b[?25l");
     // Restore the terminal on every exit path (Ctrl+C, /quit, crash).
     const restore = () => {
       try {
-        process.stdout.write("\x1b[?1007l\x1b[?1049l");
+        process.stdout.write("\x1b[?25h\x1b[?1007l\x1b[?1049l");
       } catch {
         /* terminal already gone */
       }
