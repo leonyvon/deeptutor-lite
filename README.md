@@ -1,4 +1,4 @@
-# deeptutor
+# deeptutor-lite
 
 A lightweight document tutoring CLI — RAG Q&A over your knowledge bases, web search, code execution, and a mastery learning path with deterministic grading. Standalone application (no `pi coding agent` required), built on `pi-agent-core` + `pi-ai`.
 
