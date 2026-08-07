@@ -12,6 +12,7 @@ import { Marked } from "marked";
 import type { Token, Tokens } from "marked";
 import { displayWidth } from "./MessageList.js";
 import { theme } from "./theme.js";
+import { extractMath, isCombiningChar } from "./math.js";
 import { createHighlighterCore } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 import type { HighlighterCore, ThemedToken } from "shiki/core";
@@ -65,6 +66,13 @@ interface RenderCtx {
   width: number;
   out: MdLine[];
 }
+
+/**
+ * Converted LaTeX formulas for the CURRENT renderMarkdown call, indexed by
+ * the `\u0001<idx>\u0002` placeholders extractMath leaves in the text. The
+ * render path is fully synchronous, so a module-level slot is safe.
+ */
+let currentFormulas: string[] = [];
 
 // ---------------------------------------------------------------------------
 // Syntax highlighting (shiki, lazy + asynchronous).
@@ -202,9 +210,18 @@ export function renderMarkdown(md: string, width: number): MdLine[] {
   const key = `${width}\u0000${md}`;
   const hit = cache.get(key);
   if (hit) return hit;
-  const lines = renderBlocks(md, width);
-  cache.set(key, lines);
-  return lines;
+  // LaTeX math ($$…$$ / $…$) is extracted BEFORE lexing: marked doesn't know
+  // math, and the converted Unicode text must flow through the normal token
+  // tree. Placeholders are resolved back to styled formula chars in pushText.
+  const { text, formulas } = extractMath(trimPartialClosingFences(md));
+  currentFormulas = formulas;
+  try {
+    const lines = renderBlocks(text, width);
+    cache.set(key, lines);
+    return lines;
+  } finally {
+    currentFormulas = [];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -527,7 +544,31 @@ function inlineToChars(tokens: Token[], base: Style, out: StyledChar[]): void {
 }
 
 function pushText(text: string, style: Style, out: StyledChar[]): void {
-  for (const ch of text) {
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\u0001") {
+      // Math placeholder `\u0001<idx>\u0002` (see extractMath): substitute the
+      // converted formula with the markdownMath token. Combining marks are
+      // glued onto the previous cell so the base+accent pair keeps display
+      // width 1 and can never wrap apart.
+      const end = text.indexOf("\u0002", i);
+      const formula = currentFormulas[Number(text.slice(i + 1, end))] ?? "";
+      for (const mc of formula) {
+        if (isCombiningChar(mc) && out.length > 0) {
+          const last = out[out.length - 1];
+          out[out.length - 1] = { ...last, ch: last.ch + mc };
+        } else {
+          out.push({
+            ch: mc,
+            color: theme.markdownMath,
+            ...(style.bold ? { bold: true } : {}),
+            ...(style.italic ? { italic: true } : {}),
+          });
+        }
+      }
+      i = end;
+      continue;
+    }
     out.push({
       ch,
       ...(style.color ? { color: style.color } : {}),

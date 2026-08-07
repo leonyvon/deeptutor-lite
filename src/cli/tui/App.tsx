@@ -21,7 +21,7 @@ import { MessageList, totalBufferLines, extractSelectionText } from "./MessageLi
 import type { ScreenSelection } from "./MessageList.js";
 import { parseSgrMouse } from "./mouse.js";
 import { CommandMenu } from "./CommandMenu.js";
-import { TextInput, flatPartsText, estimateInputLines } from "./TextInput.js";
+import { TextInput, flatPartsText, estimateInputLines, extractInputSelectionText } from "./TextInput.js";
 import type { InputPart } from "./TextInput.js";
 import { StatusBar } from "./StatusBar.js";
 import { ModelPicker } from "./ModelPicker.js";
@@ -29,9 +29,11 @@ import { BraveConfig } from "./BraveConfig.js";
 import { SessionPicker } from "./SessionPicker.js";
 import { AskPicker } from "./AskPicker.js";
 import { subscribeAsk, getPendingAsk, resolveAsk } from "./ask.js";
-import { sessionEntriesToMessages, loadSessionPreview } from "./history.js";
+import { sessionEntriesToMessages, loadSessionPreview, buildRewindTargets } from "./history.js";
 import { theme } from "./theme.js";
 import { getHighlighter } from "./markdown.js";
+import { RewindPicker } from "./RewindPicker.js";
+import { isDoubleEsc, ESC_DOUBLE_WINDOW_MS } from "./esc.js";
 
 let idCounter = 0;
 function nextId(): string {
@@ -49,6 +51,7 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   "/solve": "Solve step by step",
   "/visualize": "Create chart/plot",
   "/mastery": "Start mastery path",
+  "/rewind": "Rewind to a previous turn",
   "/help": "Show help",
   "/quit": "Exit",
 };
@@ -150,6 +153,11 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     estimateInputLines(input, Math.max(termWidth - 4, 10))
   );
   const inputAreaHeight = Math.min(MAX_INPUT_LINES, 2 + inputLines);
+
+  // 1-based screen row of the input box's first CONTENT line (the box spans
+  // inputAreaHeight rows directly above the 2-row status bar). Used both for
+  // the hardware-cursor anchor and for input-area drag-selection.
+  const inputContentTopRow = rows - inputAreaHeight;
 
   const visibleHeight = Math.max(rows - inputAreaHeight - 2, 5); // rows - input area - status(2 rows)
 
@@ -303,6 +311,10 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
           options: pending.options,
           selectedIndex: 0,
         });
+      } else {
+        // resolveAsk cleared the pending ask (answer picked or ESC cancelled):
+        // return to chat mode so the input box comes back.
+        setMode({ type: "chat" });
       }
     });
     return unsub;
@@ -321,7 +333,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
         setScrollOffset((prev) => clampScroll(prev - Math.max(5, Math.floor(visibleHeight * 0.3))));
       }
     },
-    { isActive: mode.type === "chat" && !isProcessing }
+    { isActive: mode.type === "chat" || mode.type === "ask" }
   );
 
   // Ctrl+C: clear the input box when it has content; exit only when empty
@@ -338,6 +350,55 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     }
   });
 
+  // Double-ESC interrupt: while a turn is running, pressing ESC twice within
+  // ESC_DOUBLE_WINDOW_MS aborts the LLM (harness.abort() → agent_end → existing
+  // event handler resets streaming/isProcessing). First ESC shows a hint.
+  const lastEscRef = useRef<number | null>(null);
+  const escHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRequestedRef = useRef(false);
+  const [escHint, setEscHint] = useState(false);
+
+  useEffect(() => {
+    if (isProcessing) return;
+    lastEscRef.current = null;
+    abortRequestedRef.current = false;
+    setEscHint(false);
+    if (escHintTimerRef.current) {
+      clearTimeout(escHintTimerRef.current);
+      escHintTimerRef.current = null;
+    }
+  }, [isProcessing]);
+
+  useInput(
+    (_input, key) => {
+      if (!key.escape) return;
+      const now = Date.now();
+      if (isDoubleEsc(lastEscRef.current, now)) {
+        lastEscRef.current = null;
+        if (abortRequestedRef.current) return;
+        abortRequestedRef.current = true;
+        setEscHint(false);
+        runtime.harness
+          ?.abort()
+          .then(() => {
+            setMessages((prev) => [
+              ...prev,
+              { type: "assistant", text: "⏹ 已中断回答", streaming: false, id: nextId() },
+            ]);
+          })
+          .catch(() => {});
+      } else {
+        lastEscRef.current = now;
+        setEscHint(true);
+        if (escHintTimerRef.current) clearTimeout(escHintTimerRef.current);
+        escHintTimerRef.current = setTimeout(() => setEscHint(false), 2000);
+      }
+    },
+    // Gate to chat mode: while an AskPicker is up, ESC must only cancel the
+    // picker (resolveAsk(null)), never trigger the turn-abort path.
+    { isActive: isProcessing && mode.type === "chat" }
+  );
+
   // SGR mouse events (enabled in index.ts with ?1000h?1002h?1006h). ink
   // passes the ESC-stripped sequence (e.g. "[<0;10;20M") as `input` with all
   // keys false. We draw our own text selection: press starts it, drag grows
@@ -346,9 +407,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   // with mouse tracking active the terminal no longer translates the wheel
   // into arrows (1007), so we handle it here.
   useInput(
-    (input) => {
-      if (!input.startsWith("[<")) return;
-      const events = parseSgrMouse(input);
+    (rawInput) => {
+      if (!rawInput.startsWith("[<")) return;
+      const events = parseSgrMouse(rawInput);
       for (const ev of events) {
         if (ev.kind === "wheel") {
           if (ev.wheelDir) {
@@ -374,6 +435,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
         if (ev.kind === "release") {
           setMouseDown(false);
           if (selection) {
+            // Both areas self-clamp to their own rows: the message buffer and
+            // the input box. A selection spanning both joins with "\n"; a
+            // selection entirely in one area leaves the other empty.
             const text = extractSelectionText(
               messages,
               termWidth,
@@ -381,10 +445,18 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
               scrollOffset,
               selection
             );
-            if (text) {
+            const inputText = extractInputSelectionText(
+              input,
+              Math.max(termWidth - 4, 10),
+              inputContentTopRow,
+              5,
+              selection
+            );
+            const combined = [text, inputText].filter(Boolean).join("\n");
+            if (combined) {
               try {
                 const clip = spawn("clip.exe", [], { stdio: ["pipe", "ignore", "ignore"] });
-                clip.stdin.write(text);
+                clip.stdin.write(combined);
                 clip.stdin.end();
               } catch {
                 /* clipboard unavailable — selection still highlighted */
@@ -395,7 +467,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
         }
       }
     },
-    { isActive: mode.type === "chat" && !isProcessing }
+    { isActive: mode.type === "chat" || mode.type === "ask" }
   );
 
   // Auto-follow: when new messages arrive and user is at bottom, stay at bottom
@@ -567,6 +639,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   /new               New session
   /list              List sessions
   /continue          Continue session
+  /rewind            Rewind to a previous turn
   /help              Show help
   /quit              Exit`;
           setMessages((prev) => [
@@ -757,6 +830,27 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
           return;
         }
 
+        if (cmd === "/rewind") {
+          const session = runtime.session;
+          const harness = runtime.harness;
+          if (!session || !harness) {
+            setMessages((prev) => [...prev, { type: "assistant", text: "No active session yet.", streaming: false, id: nextId() }]);
+            return;
+          }
+          try {
+            const entries = await session.getBranch();
+            const targets = buildRewindTargets(entries);
+            if (targets.length === 0) {
+              setMessages((prev) => [...prev, { type: "assistant", text: "Nothing to rewind to yet.", streaming: false, id: nextId() }]);
+              return;
+            }
+            setMode({ type: "rewind", targets, selectedIndex: targets.length - 1 });
+          } catch (err: any) {
+            setMessages((prev) => [...prev, { type: "assistant", text: `Error: ${err?.message ?? String(err)}`, streaming: false, id: nextId() }]);
+          }
+          return;
+        }
+
         const skillMap: Record<string, string> = {
           "/quiz": "deeptutor-quiz",
           "/research": "deeptutor-research",
@@ -867,6 +961,11 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 </Text>
               </Box>
             )}
+          {escHint && (
+            <Box marginTop={1} flexShrink={0}>
+              <Text color={theme.textMuted}>再按 ESC 中断当前回答…</Text>
+            </Box>
+          )}
           {mode.type === "ask" && (
             <AskPicker
               question={mode.question}
@@ -879,6 +978,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                     : prev
                 )
               }
+              maxHeight={rows - 2}
             />
           )}
         </Box>
@@ -1054,6 +1154,43 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             }
           />
         </Box>
+      ) : mode.type === "rewind" ? (
+        <Box
+          flexDirection="column"
+          flexGrow={1}
+          justifyContent="center"
+          alignItems="center"
+        >
+          <RewindPicker
+            targets={mode.targets}
+            selectedIndex={mode.selectedIndex}
+            onSelect={async (target) => {
+              const session = runtime.session;
+              const harness = runtime.harness;
+              if (!session || !harness) { setMode({ type: "chat" }); return; }
+              const idx = mode.targets.findIndex((t) => t.entryId === target.entryId);
+              try {
+                const result = await harness.navigateTree(target.entryId, { summarize: false });
+                const entries = await session.getBranch();
+                setMessages(sessionEntriesToMessages(entries));
+                setScrollOffset(0);
+                const roleLabel = target.role === "user" ? "你" : "AI";
+                const notice = result.editorText !== undefined
+                  ? `已回退到 #${idx + 1}（${roleLabel}），原文已恢复，可修改后重发`
+                  : `已回退到 #${idx + 1}（${roleLabel}）`;
+                setMessages((prev) => [...prev, { type: "assistant", text: notice, streaming: false, id: nextId() }]);
+                if (result.editorText !== undefined) {
+                  setInput([{ kind: "text", text: result.editorText }]);
+                }
+              } catch (err: any) {
+                setMessages((prev) => [...prev, { type: "assistant", text: `Error: ${err?.message ?? String(err)}`, streaming: false, id: nextId() }]);
+              }
+              setMode({ type: "chat" });
+            }}
+            onCancel={() => setMode({ type: "chat" })}
+            onChangeIndex={(i) => setMode((prev) => (prev.type === "rewind" ? { ...prev, selectedIndex: i } : prev))}
+          />
+        </Box>
       ) : null}
 
       {/* Input area */}
@@ -1086,6 +1223,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 focus={!isProcessing}
                 blinkPaused={mouseDown}
                 menuOpen={menuOpen}
+                selection={selection}
                 // Anchor the hardware cursor inside the input box so the
                 // Windows Terminal IME composition window (pinyin pre-edit)
                 // follows the caret instead of the last written row.
@@ -1102,7 +1240,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 // follows the text and ends up at the wide-char position, so
                 // the hardware anchor must use terminal widths: 1 + 2 + 1 = 4
                 // offset => content starts at 1-based column 5.
-                screenRow={rows - inputAreaHeight}
+                screenRow={inputContentTopRow}
                 screenColBase={5}
               />
             </Box>

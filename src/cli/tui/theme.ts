@@ -42,6 +42,8 @@ export const theme = {
   markdownBlockQuote: "#808080",
   /** Markdown horizontal rules (border gray). */
   markdownHr: "#3c3c3c",
+  /** Markdown LaTeX math ($$…$$ / $…$) — accent purple, italic-ish intent. */
+  markdownMath: "#9d7cd8",
   /** Syntax highlighting palette (aligned with the UI tokens; currently the
    *  markdown renderer uses shiki's github-dark hex values directly, these
    *  tokens are reserved for a future scope→token mapping). */

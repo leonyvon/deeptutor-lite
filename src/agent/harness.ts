@@ -26,6 +26,7 @@ import { createKBManagerTools } from "../tools/kb_manager.js";
 import { createPythonRunnerTool } from "../tools/python_runner.js";
 import { createMasteryTools } from "../tools/mastery.js";
 import { createKnowledgeTools } from "../tools/knowledge.js";
+import { createAskUserTool } from "../tools/ask_user.js";
 
 /** OpenAI-compatible provider id (Ollama etc.). */
 export const PROVIDER_ID = "openai-compat";
@@ -38,8 +39,12 @@ const SYSTEM_PROMPT = `You are deeptutor, a document tutoring assistant. You hel
 - python_run for executing Python code (visualization, computation)
 - kb_switch / kb_list / kb_create for knowledge base management
 - mastery_* tools for structured learning paths (mastery_generate, mastery_quiz, mastery_grade, mastery_status, etc.)
+- ui_ask for INTERACTIVE multiple-choice questions
 
 Rules:
+- For MASTERY PATH quiz questions: ALWAYS use mastery_quiz. For choice questions pass question_type="choice" together with the options — the TUI pops the interactive picker and mastery_grade records the result. Never use ui_ask for mastery quiz questions.
+- Use ui_ask only for multiple-choice questions that are NOT part of the mastery path (e.g. conversational choices, letting the learner pick a direction).
+- When using ui_ask or mastery_quiz with options, keep the question text free of the options — the interactive picker displays them.
 - Ground answers in the knowledge base first; cite sources when available.
 - When a quiz question is presented interactively, the learner's answer is captured by the tool — call mastery_grade with the returned userAnswer, do NOT re-present the question.
 - For code questions, include code blocks in the question text.
@@ -100,6 +105,7 @@ export function buildTools(config: Config): AgentHarnessTool<ToolContext>[] {
     createPythonRunnerTool(config.python, config.kb),
     ...createMasteryTools(config.kb),
     ...createKnowledgeTools(config.kb, config.model),
+    createAskUserTool(),
   ];
 }
 

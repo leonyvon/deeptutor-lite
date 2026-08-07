@@ -3,7 +3,7 @@
  */
 import type { SessionTreeEntry, MessageEntry, Session } from "@earendil-works/pi-agent-core";
 import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
-import type { UIMessage } from "./types.js";
+import type { UIMessage, RewindTarget } from "./types.js";
 
 let historyIdCounter = 0;
 function nextHistoryId(): string {
@@ -69,4 +69,25 @@ export async function loadSessionPreview(
     // ignore
   }
   return "";
+}
+
+/**
+ * Build rewind targets from session tree entries (already in chronological
+ * order, root → leaf). Only user/assistant messages with non-empty extracted
+ * text become targets; everything else is skipped.
+ */
+export function buildRewindTargets(entries: SessionTreeEntry[]): RewindTarget[] {
+  const out: RewindTarget[] = [];
+  for (const entry of entries) {
+    if (entry.type !== "message") continue;
+    const msg = (entry as MessageEntry).message;
+    if (msg.role === "user") {
+      const text = extractText(msg.content);
+      if (text) out.push({ entryId: entry.id, role: "user", text });
+    } else if (msg.role === "assistant") {
+      const text = extractText(msg.content);
+      if (text) out.push({ entryId: entry.id, role: "assistant", text });
+    }
+  }
+  return out;
 }

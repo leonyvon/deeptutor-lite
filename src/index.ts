@@ -71,6 +71,17 @@ async function main(): Promise<void> {
     // CR/LF inside multi-line pastes arrive as raw \r\n and ink turns them
     // into return/enter keys (breaking the input and/or submitting early).
     process.stdout.write("\x1b[?1049h\x1b[?1007h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?25l");
+    // Keep the hardware cursor hidden (the TUI draws its own ✏️ caret). Position
+    // is managed by ink's useCursor().setCursorPosition (TextInput) — ink
+    // accounts for it in its redraw math. Hiding (?25l) never moves the cursor,
+    // so it cannot desync ink's relative redraws (the previous CUP-based anchor
+    // did — frames got painted at wrong rows on Windows Terminal).
+    const rawWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((data: Uint8Array | string, ...args: any[]) => {
+      rawWrite(data as never, ...(args as never[]));
+      rawWrite("\x1b[?25l");
+      return true;
+    }) as typeof process.stdout.write;
     // Restore the terminal on every exit path (Ctrl+C, /quit, crash).
     const restore = () => {
       try {

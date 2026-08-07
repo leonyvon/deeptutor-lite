@@ -31,7 +31,7 @@ const PAD_COLS = 2;
  * the top row must use the x of the row where the drag STARTED, and the
  * bottom row the x where it ENDED. Returns top/bottom row + their x.
  */
-function normalizeSelection(sel: ScreenSelection): {
+export function normalizeSelection(sel: ScreenSelection): {
   topY: number;
   bottomY: number;
   topX: number;
@@ -370,6 +370,35 @@ export function totalBufferLines(messages: UIMessage[], termWidth: number): numb
   return buildBufferLines(messages, Math.max(termWidth - 4, 20)).length;
 }
 
+/**
+ * Synthesize styled segments for a plain (non-markdown) buffer line so every
+ * row type flows through the same selection machinery (applySelection).
+ * Keeps the exact colors/boldness the plain <Text> branches used before, so
+ * the drag-select highlight matches the message list's existing look.
+ */
+function lineToSegments(line: BufferLine): MdSegment[] {
+  switch (line.style) {
+    case "user-label":
+      return [{ text: "You", color: theme.primary, bold: true }];
+    case "tutor":
+      return [{ text: "Tutor", color: theme.accent, bold: true }];
+    case "user":
+      return [{ text: line.text, color: theme.primary }];
+    case "error":
+      return [{ text: line.text, color: theme.error, bold: true }];
+    case "tool-running":
+      return [{ text: line.text, color: theme.warning }];
+    case "tool-success":
+      return [{ text: line.text, color: theme.success }];
+    case "tool-error":
+      return [{ text: line.text, color: theme.error }];
+    case "assistant-streaming":
+      return [{ text: line.text, color: undefined }];
+    default:
+      return [{ text: line.text, color: theme.text }];
+  }
+}
+
 export function MessageList({
   messages,
   scrollOffset,
@@ -435,39 +464,11 @@ export function MessageList({
             </Text>
           ) : line.style === "spacer" ? (
             <Text> </Text>
-          ) : line.style === "user-label" ? (
-            <Text bold color={theme.primary}>
-              You
-            </Text>
-          ) : line.style === "tutor" ? (
-            <Text bold color={theme.accent}>
-              Tutor
-            </Text>
-          ) : line.style === "error" ? (
-            <Text bold color={theme.error}>
-              {line.text}
-            </Text>
-          ) : line.style === "tool-running" ? (
-            <Text color={theme.warning} wrap="truncate">
-              {line.text}
-            </Text>
-          ) : line.style === "tool-success" ? (
-            <Text color={theme.success} wrap="truncate">
-              {line.text}
-            </Text>
-          ) : line.style === "tool-error" ? (
-            <Text color={theme.error} wrap="truncate">
-              {line.text}
-            </Text>
-          ) : line.style === "user" ? (
-            <Text color={theme.primary} wrap="truncate">
-              {line.text}
-            </Text>
-          ) : line.style === "assistant-streaming" ? (
-            <Text wrap="truncate">{line.text}</Text>
           ) : (
-            <Text color={theme.text} wrap="truncate">
-              {line.text}
+            <Text wrap="truncate">
+              {applySelection(lineToSegments(line), selRange).map((node, si) => (
+                <React.Fragment key={si}>{node}</React.Fragment>
+              ))}
             </Text>
           )}
         </Box>

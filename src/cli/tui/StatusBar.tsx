@@ -71,11 +71,11 @@ export function StatusBar({
       <Box
         height={1}
         flexDirection="row"
-        justifyContent="space-between"
         backgroundColor={theme.panel}
       >
-        <Text color={theme.textMuted}>拖拽选中文本，松开即复制</Text>
-        <Text color={theme.textMuted}>Ctrl+C 退出</Text>
+        <Text color={theme.textMuted} wrap="truncate">
+          拖拽选中文本，松开即复制 | 双击ESC中断AI回答 | CTRL+C 清空输入框/退出程序
+        </Text>
       </Box>
     </Box>
   );

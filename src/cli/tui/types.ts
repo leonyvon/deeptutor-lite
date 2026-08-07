@@ -14,6 +14,12 @@ export type UIMessage =
       id: string;
     };
 
+export interface RewindTarget {
+  entryId: string;
+  role: "user" | "assistant";
+  text: string;
+}
+
 export type AppMode =
   | { type: "chat" }
   | {
@@ -40,5 +46,10 @@ export type AppMode =
       type: "ask";
       question: string;
       options: Record<string, string>;
+      selectedIndex: number;
+    }
+  | {
+      type: "rewind";
+      targets: RewindTarget[];
       selectedIndex: number;
     };

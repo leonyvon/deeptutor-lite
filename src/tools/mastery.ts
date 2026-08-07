@@ -229,8 +229,74 @@ async function semanticSimilarity(a: string, b: string): Promise<number> {
   }
 }
 
-async function gradeAnswer(userAnswer: string, expectedAnswer: string, questionType: QuestionType): Promise<boolean> {
+export async function gradeAnswer(
+  userAnswer: string,
+  expectedAnswer: string,
+  questionType: QuestionType,
+  options?: Record<string, string> | null
+): Promise<boolean> {
   if (!expectedAnswer) return false;
+
+  // Options present: resolve the learner's answer to (letter, option text) so
+  // grading works whether the answer is a bare letter ("A"), a prefixed
+  // selection ("A: option text"), or the option text itself — regardless of
+  // what form expectedAnswer uses (letter or text). When expectedAnswer is
+  // free text, map it to the option it matches (exact first, then semantic
+  // argmax) and compare letters — this is what "the expected answer is one of
+  // these options" means, and plain semantic similarity between a short
+  // expected phrase and a long option sentence routinely falls below 0.85
+  // even when the option is the right one (LLMs often pass expected_answer as
+  // prose instead of the letter).
+  const opts = options && Object.keys(options).length > 0 ? options : null;
+  if (opts) {
+    const trimmed = userAnswer.trim();
+    const userLetter = /^[A-Za-z]/.test(trimmed) ? trimmed[0].toUpperCase() : null;
+    const userText =
+      userLetter && opts[userLetter] ? opts[userLetter] : trimmed;
+    const expectedTrimmed = expectedAnswer.trim();
+    const norm = (s: string) => s.replace(/\s/g, "").toLowerCase();
+
+    // 1. expectedAnswer is a bare letter → letter comparison.
+    const expectedLetter = /^[A-Za-z]$/i.test(expectedTrimmed)
+      ? expectedTrimmed.toUpperCase()
+      : null;
+    if (expectedLetter) {
+      return userLetter === expectedLetter;
+    }
+
+    // 2. user's text equals expected text (option text or typed answer).
+    if (norm(userText) === norm(expectedTrimmed)) {
+      return true;
+    }
+
+    // 3. Map expectedAnswer (free text) to the option it matches.
+    //    Exact option-text match first (no embedding needed)…
+    const expectedKey = Object.entries(opts).find(
+      ([, v]) => norm(v) === norm(expectedTrimmed)
+    )?.[0];
+    if (expectedKey) {
+      return userLetter === expectedKey.toUpperCase();
+    }
+    //    …then semantic argmax: the option whose text is closest to the
+    //    expected answer is THE answer; user must have picked it. A floor
+    //    avoids mapping garbage expected values onto a random option.
+    let bestKey: string | null = null;
+    let bestScore = 0;
+    for (const [k, v] of Object.entries(opts)) {
+      const score = await semanticSimilarity(expectedTrimmed, v);
+      if (score > bestScore) {
+        bestScore = score;
+        bestKey = k;
+      }
+    }
+    if (bestKey && bestScore >= 0.6) {
+      return userLetter === bestKey.toUpperCase();
+    }
+
+    // 4. Fallback: semantic similarity of the user's content vs expected.
+    const semScore = await semanticSimilarity(userText, expectedTrimmed);
+    return semScore >= 0.85;
+  }
 
   // choice: exact label match
   if (questionType === "choice") {
@@ -651,7 +717,8 @@ export function createMasteryTools(cfg: Config["kb"]): AgentHarnessTool<ToolCont
     label: "Quiz a Topic (Mastery Path)",
     description:
       "Pose a quiz question for a specific topic in the learning path. This stores the expected answer deterministically — grading will NOT use AI judgement, but exact/similarity matching. "
-      + "IMPORTANT flow: When called with `options` (choice question) in a TUI session, this tool PRESENTS the question interactively to the learner AND captures their answer. "
+      +       "IMPORTANT flow: When called with `options` (choice question) in a TUI session, this tool PRESENTS the question interactively to the learner AND captures their answer. "
+      + "For choice questions, the question text must NOT contain the options — pass them only in the options parameter, and set `expected_answer` to the LETTER of the correct option (e.g. \"B\"), NOT to prose — prose expected answers grade against option text similarity and can misjudge correct picks. "
       + "If the response includes `userAnswer`, the question was already answered — do NOT present it again. Just call `mastery_grade` with that answer."
       + " For MEMORY/PROCEDURE topics, the learner must score ≥90% over multiple attempts. For CONCEPT/DESIGN topics, use mastery_assess.",
     parameters: Type.Object({
@@ -702,11 +769,18 @@ export function createMasteryTools(cfg: Config["kb"]): AgentHarnessTool<ToolCont
         };
       }
 
+      // Options imply a choice question: even when the LLM passes
+      // question_type="short" with options, the interactive picker fires and
+      // grading uses the options-aware path. Compute BEFORE building the
+      // pending question so its stored type matches what was presented.
+      const hasOpts = params.options && Object.keys(params.options).length > 0;
+      const isChoice = params.question_type === "choice" || hasOpts;
+
       const pending: PendingQuestion = {
         questionId: randomUUID(),
         question: params.question,
         expectedAnswer: params.expected_answer,
-        questionType: params.question_type as QuestionType,
+        questionType: isChoice ? ("choice" as QuestionType) : (params.question_type as QuestionType),
         options: params.options ?? null,
       };
 
@@ -720,8 +794,6 @@ export function createMasteryTools(cfg: Config["kb"]): AgentHarnessTool<ToolCont
       await writeMastery(kbPath, data);
 
       // ── Interactive choice presentation via ctx.ask ──
-      const isChoice = params.question_type === "choice";
-      const hasOpts = params.options && Object.keys(params.options).length > 0;
 
       if (isChoice && hasOpts && ctx.ask) {
         try {
@@ -814,7 +886,12 @@ export function createMasteryTools(cfg: Config["kb"]): AgentHarnessTool<ToolCont
         };
       }
 
-      const isCorrect = await gradeAnswer(params.answer, topic.pendingQuestion.expectedAnswer, topic.pendingQuestion.questionType);
+      const isCorrect = await gradeAnswer(
+        params.answer,
+        topic.pendingQuestion.expectedAnswer,
+        topic.pendingQuestion.questionType,
+        topic.pendingQuestion.options
+      );
 
       // Record attempt
       topic.attempts.push({
@@ -824,6 +901,7 @@ export function createMasteryTools(cfg: Config["kb"]): AgentHarnessTool<ToolCont
       });
 
       const qId = topic.pendingQuestion.questionId;
+      const expectedAnswerText = topic.pendingQuestion.expectedAnswer;
       topic.pendingQuestion = null;
 
       // ── ErrorRecord (Feature 3) ──
@@ -991,7 +1069,7 @@ export function createMasteryTools(cfg: Config["kb"]): AgentHarnessTool<ToolCont
               ? (mastered
                 ? `Correct! ${topic.topic} is now MASTERED (${Math.round(score * 100)}%). Moving on.`
                 : `Correct! But mastery is ${Math.round(score * 100)}% — gate requires ≥${MASTERY_THRESHOLD * 100}%. ${neededForGate > 0 ? `Need ${neededForGate} more correct answers (confidence cap prevents early mastery).` : ""}`)
-              : `Incorrect. Expected: "${(topic.pendingQuestion as PendingQuestion | null)?.expectedAnswer ?? "(unknown)"}". ${stageActions[topic.stage] ?? "Encourage the learner and try another question."}`,
+              : `Incorrect. Expected: "${expectedAnswerText}". ${stageActions[topic.stage] ?? "Encourage the learner and try another question."}`,
           }, null, 2),
         }],
         details: {

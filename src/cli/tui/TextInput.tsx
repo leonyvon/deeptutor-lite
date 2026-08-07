@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Box, Text, useInput, useStdout, usePaste } from "ink";
+import { Box, Text, useInput, useStdout, usePaste, useCursor } from "ink";
 import { theme } from "./theme.js";
-import { displayWidth } from "./MessageList.js";
+import { displayWidth, normalizeSelection } from "./MessageList.js";
+import type { ScreenSelection } from "./MessageList.js";
 
 /**
  * Input content model: the input box is a SEQUENCE of parts — plain text
@@ -192,6 +193,97 @@ export function estimateInputLines(parts: InputPart[], width: number): number {
   return buildLines(parts, width).length;
 }
 
+/**
+ * Group `text` chars into selected/unselected runs for the selection range
+ * [start, end) of content columns, starting at `offset`. Mirror of
+ * MessageList's applySelection grouping (selected runs get the selection
+ * background while keeping the base color). Returns one <Text> node per run.
+ */
+function applyInputSelection(
+  text: string,
+  offset: number,
+  range: { start: number; end: number } | null,
+  color: string | undefined
+): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  let group: { text: string; selected: boolean } | null = null;
+  let col = offset;
+  let key = 0;
+  const flush = () => {
+    if (!group) return;
+    if (group.selected && range) {
+      nodes.push(
+        <React.Fragment key={key++}>
+          <Text color={color} backgroundColor={theme.selection}>
+            {group.text}
+          </Text>
+        </React.Fragment>
+      );
+    } else {
+      nodes.push(
+        <React.Fragment key={key++}>
+          <Text color={color}>{group.text}</Text>
+        </React.Fragment>
+      );
+    }
+    group = null;
+  };
+  for (const ch of text) {
+    const w = displayWidth(ch);
+    const selected = range ? col >= range.start && col < range.end : false;
+    if (!group || group.selected !== selected) {
+      flush();
+      group = { text: "", selected };
+    }
+    group.text += ch;
+    col += w;
+  }
+  flush();
+  return nodes;
+}
+
+/**
+ * Extract the text covered by a screen-coordinate selection from the input
+ * box. Rows outside the input's content rows contribute nothing; selected
+ * rows are sliced by content columns and joined with "\n". Block segments
+ * contribute their label chars; the 2 padding columns are never copied.
+ */
+export function extractInputSelectionText(
+  parts: InputPart[],
+  width: number,
+  screenRow: number,
+  screenColBase: number,
+  selection: ScreenSelection
+): string {
+  const lines = buildLines(parts, width);
+  const { topY, bottomY, topX, bottomX } = normalizeSelection(selection);
+  const lastRow = screenRow + lines.length - 1;
+  const out: string[] = [];
+  for (let y = topY; y <= bottomY; y++) {
+    if (y < screenRow || y > lastRow) continue;
+    const line = lines[y - screenRow];
+    const colStart = y === topY ? Math.max(0, topX - screenColBase) : 0;
+    const colEnd =
+      y === bottomY
+        ? Math.max(0, bottomX - screenColBase)
+        : Number.POSITIVE_INFINITY;
+    let text = "";
+    let col = 0;
+    outer: for (const seg of line) {
+      const chars = seg.kind === "text" ? seg.text : seg.label;
+      for (const ch of chars) {
+        const w = displayWidth(ch);
+        if (col + w > colEnd) break outer;
+        if (col >= colStart) text += ch;
+        col += w;
+      }
+      if (seg.kind === "block") col += 2; // paddingX 1×2
+    }
+    out.push(text);
+  }
+  return out.join("\n");
+}
+
 interface TextInputProps {
   parts: InputPart[];
   onChange: (parts: InputPart[]) => void;
@@ -207,6 +299,8 @@ interface TextInputProps {
   blinkPaused?: boolean;
   /** When a dropdown/menu is open, ↑/↓ belong to it, not the caret. */
   menuOpen?: boolean;
+  /** App-drawn selection in screen coords (1-based); highlighted inline. */
+  selection?: ScreenSelection | null;
 }
 
 export function TextInput({
@@ -220,8 +314,12 @@ export function TextInput({
   screenColBase,
   blinkPaused = false,
   menuOpen = false,
+  selection,
 }: TextInputProps): React.ReactElement {
   const { stdout } = useStdout();
+  // ink's cursor API: publish the input caret position so ink accounts for it
+  // in its redraw math and positions the (hidden) hardware cursor for IME.
+  const { setCursorPosition } = useCursor();
   // Caret = (part index, offset within that part). For text parts the offset
   // is a char index; for block parts it is 0 (before the block) or 1 (after).
   const [caret, setCaret] = useState<{ pi: number; off: number }>(() =>
@@ -273,6 +371,13 @@ export function TextInput({
     parts,
     contentWidth,
   ]);
+
+  // Normalized selection (drag-direction aware); column math is input-box
+  // specific (content col 0 = 1-based screen col screenColBase).
+  const sel = useMemo(
+    () => (selection ? normalizeSelection(selection) : null),
+    [selection]
+  );
 
   // Caret {pi, off} -> render line index + column within that line. Text
   // segments map via their char-offset range; a block anchors at its left edge
@@ -582,26 +687,34 @@ export function TextInput({
     { isActive: focus }
   );
 
-  // Hardware-cursor anchoring (hidden) for IME composition positioning.
   const shownText = flatPartsText(parts) || placeholder || "";
+
+  // Publish the input caret position to ink's cursor API (IME support): ink
+  // tracks this position across frames and accounts for it in its redraw math
+  // (no desync — unlike raw CUP escapes appended after writes). Coordinates
+  // are 0-based relative to the ink output origin; screenRow/screenColBase
+  // are 1-based screen coords, so subtract 1. index.ts re-hides the cursor
+  // after every write (the ✏️ is our visible caret).
+  //
+  // ink #982 (vadimdemedes/ink, merged to master 2026-08-03, NOT in any
+  // release; latest = 7.1.1): in fullscreen frames (no trailing newline —
+  // this App ALWAYS renders one, root <Box height={rows}> in the alternate
+  // screen), buildCursorSuffix computes moveUp = visibleLineCount - y while
+  // the real cursor sits on the LAST line (visibleLineCount - 1), so the
+  // emitted cursorUp is 1 too large and the hardware cursor lands one row
+  // ABOVE the requested y — the IME composition window (pinyin pre-edit)
+  // follows it one row too high. Compensation: publish y+1 (equivalent to
+  // #982's bottomLine fix; valid only while the frame never ends in \n).
+  // If ink ships a release with #982, revert y to `row - 1`.
   useEffect(() => {
-    if (screenRow === undefined) return;
-    if (!focus) {
-      stdout.write("\x1b[?25l");
+    if (screenRow === undefined || !focus) {
+      setCursorPosition(undefined);
       return;
     }
     const row = screenRow + caretLoc.row;
     const col = (screenColBase ?? 1) + caretLoc.col;
-    stdout.write(`\x1b[${row};${col}H\x1b[?25l`);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [caretLoc.row, caretLoc.col, focus, screenRow, screenColBase, cursorOn, parts]);
-
-  useEffect(() => {
-    return () => {
-      if (screenRow !== undefined) stdout.write("\x1b[?25l");
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screenRow]);
+    setCursorPosition({ x: col - 1, y: row });
+  }, [caretLoc.row, caretLoc.col, focus, screenRow, screenColBase, setCursorPosition]);
 
   // ---- Render -------------------------------------------------------------
   return (
@@ -609,12 +722,38 @@ export function TextInput({
       {lines.length === 0 ? (
         <Text color={theme.textMuted}>{placeholder ?? ""}</Text>
       ) : (
-        lines.map((line, r) => (
+        lines.map((line, r) => {
+          // Screen row of this content line (1-based): the input box's first
+          // content row is `screenRow` (App passes rows - inputAreaHeight), so
+          // content line 0 sits at screen row screenRow, line r at screenRow+r
+          // (same convention as the hardware-cursor anchor `screenRow +
+          // caretLoc.row`).
+          const y = (screenRow ?? 0) + r;
+          // Content col 0 sits at 1-based screen col screenColBase (App: 5),
+          // so content col = x - screenColBase (input box has its own padding
+          // math — do NOT reuse the message area's PAD_COLS).
+          let selRange: { start: number; end: number } | null = null;
+          if (sel && screenRow !== undefined && y >= sel.topY && y <= sel.bottomY) {
+            selRange = {
+              start:
+                y === sel.topY
+                  ? Math.max(0, sel.topX - (screenColBase ?? 1))
+                  : 0,
+              end:
+                y === sel.bottomY
+                  ? Math.max(0, sel.bottomX - (screenColBase ?? 1))
+                  : Number.POSITIVE_INFINITY,
+            };
+          }
+          let lineCol = 0;
           // height={1} guarantees every buildLines row (including empty rows
           // produced by hard newlines) occupies exactly one terminal line, so
           // the rendered height always matches estimateInputLines.
+          return (
           <Box key={r} flexDirection="row" flexShrink={0} height={1}>
             {line.map((seg) => {
+              const segStart = lineCol;
+              lineCol += segWidth(seg);
               if (seg.kind === "block") {
                 // Filled rectangle placeholder (opencode style): warning
                 // background, dark text, one padding column each side. The
@@ -629,10 +768,20 @@ export function TextInput({
                   ) : (
                     <Text>　</Text>
                   ));
+                // Whole-block highlight on any column overlap is the intended
+                // approximation (the block is an atomic filled rectangle).
+                const blockSelected =
+                  selRange !== null &&
+                  segStart < selRange.end &&
+                  segStart + segWidth(seg) > selRange.start;
                 return (
                   <React.Fragment key={seg.id}>
                     {isCaretHere && caret.off === 0 && focus && caretGlyph}
-                    <Box backgroundColor={theme.warning} paddingX={1} flexShrink={0}>
+                    <Box
+                      backgroundColor={blockSelected ? theme.selection : theme.warning}
+                      paddingX={1}
+                      flexShrink={0}
+                    >
                       <Text color={theme.panel} bold wrap="truncate">
                         {seg.label}
                       </Text>
@@ -654,12 +803,13 @@ export function TextInput({
               // Unique per line: includes offEnd so the zero-width anchor
               // (offStart == offEnd) never collides with the following segment.
               const segKey = `${seg.pi}:${seg.offStart}:${seg.offEnd}`;
+              const inputColor = shownText ? undefined : theme.textMuted;
               if (hasCaret) {
                 const local = caret.off - seg.offStart;
                 if (!focus) {
                   return (
-                    <Text key={segKey} wrap="truncate" color={shownText ? undefined : theme.textMuted}>
-                      {displayText}
+                    <Text key={segKey} wrap="truncate">
+                      {applyInputSelection(displayText, segStart, selRange, inputColor)}
                     </Text>
                   );
                 }
@@ -681,26 +831,34 @@ export function TextInput({
                   cw += w;
                   cover++;
                 }
+                // The glyph OVERLAYS the covered chars (no layout shift): text
+                // after it starts at column width(before) + width(covered).
                 return (
-                  <Text key={segKey} wrap="truncate" color={shownText ? undefined : theme.textMuted}>
-                    {before}
+                  <Text key={segKey} wrap="truncate">
+                    {applyInputSelection(before, segStart, selRange, inputColor)}
                     {cursorOn ? (
                       <Text color={theme.accent}>✏️</Text>
                     ) : (
                       <Text>　</Text>
                     )}
-                    {rest.slice(cover)}
+                    {applyInputSelection(
+                      rest.slice(cover),
+                      segStart + displayWidth(before) + cw,
+                      selRange,
+                      inputColor
+                    )}
                   </Text>
                 );
               }
               return (
-                <Text key={segKey} wrap="truncate" color={shownText ? undefined : theme.textMuted}>
-                  {displayText}
+                <Text key={segKey} wrap="truncate">
+                  {applyInputSelection(displayText, segStart, selRange, inputColor)}
                 </Text>
               );
             })}
           </Box>
-        ))
+          );
+        })
       )}
     </Box>
   );
