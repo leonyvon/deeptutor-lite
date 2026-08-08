@@ -4,6 +4,7 @@
 import type { SessionTreeEntry, MessageEntry, Session } from "@earendil-works/pi-agent-core";
 import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
 import type { UIMessage, RewindTarget } from "./types.js";
+import { isResumePromptMessage } from "./resume.js";
 
 let historyIdCounter = 0;
 function nextHistoryId(): string {
@@ -27,7 +28,9 @@ export function sessionEntriesToMessages(entries: SessionTreeEntry[]): UIMessage
     const msg = (entry as MessageEntry).message;
     if (msg.role === "user") {
       const text = extractText(msg.content);
-      if (text) {
+      // Skip the internal "resume and continue" prompt (it only drives the
+      // resumed agent turn; it is not a real learner message).
+      if (text && !isResumePromptMessage(text)) {
         out.push({ type: "user", text, id: nextHistoryId() });
       }
     } else if (msg.role === "assistant") {

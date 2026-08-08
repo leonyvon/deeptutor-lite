@@ -15,7 +15,7 @@ import { Box, Text, useInput, useApp, useWindowSize } from "ink";
 import { spawn } from "node:child_process";
 import { basename } from "node:path";
 import type { DeeptutorRuntime } from "../../agent/harness.js";
-import type { JsonlSessionRepo } from "@earendil-works/pi-agent-core";
+import type { JsonlSessionRepo, Session, JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
 import type { UIMessage, AppMode } from "./types.js";
 import { MessageList, totalBufferLines, extractSelectionText } from "./MessageList.js";
 import type { ScreenSelection } from "./MessageList.js";
@@ -28,7 +28,8 @@ import { ModelPicker } from "./ModelPicker.js";
 import { BraveConfig } from "./BraveConfig.js";
 import { SessionPicker } from "./SessionPicker.js";
 import { AskPicker } from "./AskPicker.js";
-import { subscribeAsk, getPendingAsk, resolveAsk } from "./ask.js";
+import { subscribeAsk, getPendingAsk, resolveAsk, restoreAsk } from "./ask.js";
+import { findUnfinishedAskToolCall, buildResumedToolResult, RESUME_PROMPT_TEXT } from "./resume.js";
 import { sessionEntriesToMessages, loadSessionPreview, buildRewindTargets } from "./history.js";
 import { theme } from "./theme.js";
 import { getHighlighter } from "./markdown.js";
@@ -182,6 +183,73 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     [maxScroll]
   );
 
+  // Resume an unfinished interactive question (ui_ask / mastery_quiz) left by
+  // a previous run: if the session tail is an assistant message whose last
+  // interactive toolCall has no toolResult, re-pop the SAME AskPicker via
+  // restoreAsk. On answer, synthesize the toolResult the tool would have
+  // returned and write it back into the session — the next agent turn then
+  // sees a valid assistant(toolCall) → toolResult pair and continues the flow
+  // (e.g. mastery_grade) naturally. Idempotent: already-resolved calls skip.
+  const maybeResumeUnfinishedAsk = useCallback(
+    async (session: Session<JsonlSessionMetadata>): Promise<void> => {
+      const harness = runtime.harness;
+      if (!harness) return;
+      try {
+        const entries = await session.getBranch();
+        const unfinished = findUnfinishedAskToolCall(entries);
+        if (!unfinished) return;
+        setMessages((prev) => [
+          ...prev,
+          {
+            type: "assistant",
+            text: "检测到上次未完成的选择题，请继续作答：",
+            streaming: false,
+            id: nextId(),
+          },
+        ]);
+        restoreAsk(unfinished.question, unfinished.options, async (value) => {
+          try {
+            const toolResult = buildResumedToolResult(unfinished, value);
+            await harness.appendMessage(toolResult);
+            setMessages((prev) => [
+              ...prev,
+              {
+                type: "assistant",
+                text: value
+                  ? "已记录你的选择，正在继续…"
+                  : "已取消上次未完成的选择题。",
+                streaming: false,
+                id: nextId(),
+              },
+            ]);
+            if (value) {
+              // Drive the agent to continue NOW: the session tail is the valid
+              // assistant(toolCall) → toolResult pair, so one more turn resumes
+              // the flow (mastery_grade etc.) without the learner typing again.
+              // The internal prompt message is filtered out of the UI/history.
+              setIsProcessing(true);
+              await harness.prompt(RESUME_PROMPT_TEXT);
+            }
+          } catch (err: any) {
+            setIsProcessing(false);
+            setMessages((prev) => [
+              ...prev,
+              {
+                type: "assistant",
+                text: `Error resuming question: ${err?.message ?? String(err)}`,
+                streaming: false,
+                id: nextId(),
+              },
+            ]);
+          }
+        });
+      } catch {
+        // branch read failed — nothing to resume
+      }
+    },
+    [runtime]
+  );
+
   // Load session path on mount / runtime change
   useEffect(() => {
     if (!runtime.session) return;
@@ -189,6 +257,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
       .getMetadata()
       .then((m) => setSessionPath(m.path))
       .catch(() => {});
+    // Resume an unfinished interactive question left by a previous run
+    // (--session startup path): re-pops the AskPicker and records the answer.
+    void maybeResumeUnfinishedAsk(runtime.session);
   }, [runtime.session]);
 
   // Subscribe to harness events for streaming UI updates.
@@ -1140,6 +1211,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 const history = sessionEntriesToMessages(entries);
                 setMessages(history);
                 setScrollOffset(0);
+                // Resume an unfinished interactive question from the previous
+                // run (if the session tail left one).
+                await maybeResumeUnfinishedAsk(opened);
               } catch (err: any) {
                 setMessages((prev) => [
                   ...prev,

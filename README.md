@@ -20,6 +20,7 @@ Full-screen ink TUI (opencode-style): interactive choice questions, drag-to-sele
 | Problem Solver | `/solve` workflow skill |
 | Mastery Learning Path | mastery_generate / quiz / grade / status (deterministic + semantic grading) |
 | Interactive Choice Questions | `ui_ask` + `mastery_quiz` pop an option picker (↑↓ navigate, Enter select, Esc cancel) |
+| Question Resume | `/continue` (or `--session`) re-pops an unfinished choice question left by a previous run and records the answer so the flow continues |
 | LaTeX Math Rendering | `$$...$$` / `$...$` converted to Unicode (fractions, Greek, sub/superscripts, accents) |
 | Drag-to-Select Copy | Mouse drag selects text in messages + input box, release copies to clipboard |
 | Paste Blocks | Large multi-line pastes become inline `[Pasted N lines]` placeholder blocks |

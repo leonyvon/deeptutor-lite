@@ -173,6 +173,12 @@
 53. **窗口化三处行号必须联动**：修复 = TextInput 加 `maxLines` prop——`viewTop = clamp(caretLoc.row-(maxLines-1), 0, lines.length-maxLines)`（caret 行恒在窗口最后一行，Home/End/↑↓ 移动 caret 即滚动窗口），渲染只画 `lines.slice(viewTop, viewTop+maxLines)`。三处映射同步改：① 渲染循环的 caret 判定用**全量行号** `bufRow = viewTop+r`；② 光标锚定 `setCursorPosition` 用**窗口内行号** `screenRow + caretLoc.row - viewTop`（否则 IME 定位偏到窗口外）；③ 选区提取 `extractInputSelectionText` 加 viewTop/maxLines 参数，屏幕行 y → buffer 行 `viewTop+(y-screenRow)`，`lastRow = screenRow + min(lines.length, maxLines) - 1`。App 侧：`visibleInputLines = min(inputLines, MAX-2)`、`viewportRef`（useRef）由 TextInput 每帧写入当前 viewTop，鼠标释放时提取选区用 `inputViewportRef.current`。
 54. **headless 断言小心 React 渲染时机**：Home 键只触发 TextInput 内部 setState → 父组件（Harness）不重渲染 → 在父组件 `useEffect` 里读 `viewportRef.current` 会读到**旧值**。正确做法：viewportRef 用**访问器对象**（`{ get current(), set current(v){同步外部变量} }`）替代 `useRef`，TextInput 每次渲染写 ref 即实时同步。窗口化断言：输入 >maxLines 行内容后数渲染非空行数 ≤ maxLines、caret 在末尾时 viewTop = lines.length-maxLines、Home 后 viewTop=0 且首行（用独特前缀如 `X` 行区分窗口位置）重新可见。
 
+### 3.14 未完成选择题的会话恢复（/continue 重现 ui-ask）
+
+55. **"未完成的选择题"在 JSONL 里的真实形态**：选择题弹出时，assistant 消息（含 ui_ask / mastery_quiz 的 toolCall）在 `message_end` 事件时**已持久化**（agent-harness `handleAgentEvent` → `session.appendMessage`），但 toolResult **从未写入**（ctx.ask 的 Promise 挂起，用户退出进程）。恢复会话后：① `sessionEntriesToMessages` 只提取 text，toolCall-only 消息不显示 → 用户看到"记录消失"；② 上下文尾部是 `assistant(toolCall) 无 toolResult` → LLM API 拒绝该序列，后续对话直接报错。检测要点：**最后一条 message entry 必须是 assistant 且其最后一个交互 toolCall（ui_ask/mastery_quiz 带 options）没有对应 toolResult**——有 toolResult / 尾部是 user / 非交互工具都不算。
+56. **恢复链路**（`src/cli/tui/resume.ts` + `ask.ts` 的 `restoreAsk`）：`findUnfinishedAskToolCall(branch)` 纯函数检测 → `restoreAsk(question, options, onResolve)` 复用**同一个** pendingAsk/AskPicker 机制（listeners 通知 App 切 ask 模式）→ 用户作答后 `buildResumedToolResult` 合成工具本该返回的 toolResult（mastery_quiz 用 alreadyAnswered + nextStep 指向 mastery_grade；ui_ask 用 answer/cancelled 语义）→ `harness.appendMessage(toolResult)` 写回会话 → **必须立即 `harness.prompt(RESUME_PROMPT_TEXT)` 驱动 agent 继续**（教训：第一版只写回 toolResult 并提示"继续输入以继续"，用户实测"选择后 agent 没反应"——agent 不会自动醒来，必须手动再触发一轮；内部 prompt 消息带 `[deeptutor-resume] ` 标记，history.ts 的 `sessionEntriesToMessages` 用 `isResumePromptMessage` 过滤，不污染历史/预览）。`maybeResumeUnfinishedAsk` 挂在会话加载后（SessionPicker onSelect）+ `--session` 启动路径（mount effect 依赖 `runtime.session`）。
+57. **mastery 恢复的额外保底**：mastery_quiz 在弹出前已 `writeMastery` 持久化 `topic.pendingQuestion`，所以恢复后即使不依赖 toolResult 细节，mastery_grade 也能从磁盘读到 expectedAnswer——恢复只补 toolResult 契约，不重建题目状态。
+
 ---
 
 ## 4. 失误记录（避免重蹈）
@@ -195,7 +201,7 @@
 
 - 运行：`npm run dev`（或 build 后 `node dist/index.js`）；pwsh + Windows Terminal
 - 构建：`npm run build`（tsc，必须 0 错误）
-- 冒烟/复现脚本（项目根）：`_smoke_parts.mjs`（22/22：交互+窗口化滚动）、`_smoke_rewind.mjs`（19/19）、`_smoke_select.mjs`（13/13 划词）、`_smoke_anchor.mjs`（5/5 ink 光标后缀 + #982 全屏补偿）、`_smoke_ask.mjs`（51/51：ask 模块/ui_ask 工具/字母评分+prose expected 映射/AskPicker 渲染+窗口化+截断）、`_smoke_math.mjs`（33/33：mathToUnicode 转换/extractMath 代码保护/renderMarkdown 集成）；复现脚本 `_repro_height.mjs`（软换行）、`_repro_nl_height.mjs`（硬换行）、`_repro_askpick.mjs`（选项拆块）、`_repro_4opts.mjs`（选项溢出）、`_repro_edge.mjs`（矮终端+滚动）、`_repro_cursor982.mjs`（ink #982 全屏 off-by-one）
+- 冒烟/复现脚本（项目根）：`_smoke_parts.mjs`（22/22：交互+窗口化滚动）、`_smoke_rewind.mjs`（19/19）、`_smoke_select.mjs`（13/13 划词）、`_smoke_anchor.mjs`（5/5 ink 光标后缀 + #982 全屏补偿）、`_smoke_ask.mjs`（51/51：ask 模块/ui_ask 工具/字母评分+prose expected 映射/AskPicker 渲染+窗口化+截断）、`_smoke_math.mjs`（33/33：mathToUnicode 转换/extractMath 代码保护/renderMarkdown 集成）、`_smoke_resume.mjs`（14/14：未完成选择题会话恢复——findUnfinishedAskToolCall 检测/restoreAsk 弹回/合成 toolResult/RESUME_PROMPT_TEXT 自动驱动继续 + isResumePromptMessage 过滤）；复现脚本 `_repro_height.mjs`（软换行）、`_repro_nl_height.mjs`（硬换行）、`_repro_askpick.mjs`（选项拆块）、`_repro_4opts.mjs`（选项溢出）、`_repro_edge.mjs`（矮终端+滚动）、`_repro_cursor982.mjs`（ink #982 全屏 off-by-one）
 - 数据：`~/.deeptutor/`（sessions jsonl / kbs / knowledge sqlite / auth.json）
 - 状态栏两行：第 1 行 `[deeptutor-lite] @ provider | KB: xxx` + 模型/会话；第 2 行 `拖拽选中文本，松开即复制 | 双击ESC中断AI回答 | CTRL+C 清空输入框/退出程序`
 - 快捷键现状：Enter 提交 / Ctrl+Enter 换行 / ↑↓ 光标跨行（菜单/选择器打开时归它们）/ PgUp/PgDn + 滚轮 滚动 / Ctrl+C 先清空再退出 / **双击 ESC 中断回答（400ms 窗口，仅处理中有效）** / **/rewind 回退历史对话（回退到 user prompt 自动填回输入框）** / 无修饰键拖拽 = 自绘选区复制（消息区+输入框全覆盖）/ Shift+拖拽 = WT 原生选区
@@ -215,6 +221,7 @@
 - 状态栏第二行文案更新
 - 滚动锁死修复：滚轮/PgUp/PgDn 门控放宽（chat||ask，处理中可回看历史）
 - 输入框窗口化滚动（修复"第七行溢出"）：TextInput maxLines + viewTop + viewportRef 三处行号联动（§3.13-52/53/54）
+- 未完成选择题恢复：/continue 或 --session 后重现 ui-ask（resume.ts 检测 + restoreAsk + 合成 toolResult 写回会话 + RESUME_PROMPT_TEXT 自动驱动 agent 继续，§3.14-55/56/57）
 - mastery 评分修复：expected 为 prose 时映射到选项字母（精确→语义 argmax）+ Expected 提示修复 + 描述要求传字母
 - LaTeX 数学渲染（math.ts 转换器 + markdownMath 主题 + extractMath 代码保护 + 流式未闭合处理）
 - ink #982 全屏 off-by-one 补偿（TextInput 发布 y+1，_smoke_anchor Part C 固化断言）

@@ -50,3 +50,19 @@ export function inkAsk(
     listeners.forEach((l) => l());
   });
 }
+
+/**
+ * Resume an unfinished interactive question after session restore: pops the
+ * SAME AskPicker (shared pendingAsk + subscribeAsk mechanism) but hands the
+ * learner's answer to `onResolve` instead of a suspended tool promise. The
+ * App synthesizes the toolResult and writes it back into the session so the
+ * resumed agent turn sees the original tool contract.
+ */
+export function restoreAsk(
+  question: string,
+  options: Record<string, string>,
+  onResolve: (value: string | null) => void
+): void {
+  pendingAsk = { question, options, resolve: onResolve };
+  listeners.forEach((l) => l());
+}
