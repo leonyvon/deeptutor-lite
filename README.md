@@ -147,7 +147,7 @@ npm test         # unit tests
 Smoke tests (run AFTER `npm run build`, all must pass):
 
 ```bash
-node _smoke_parts.mjs     # 17/17  input-box interactions (paste blocks, caret)
+node _smoke_parts.mjs     # 22/22  input-box interactions + windowed scroll
 node _smoke_rewind.mjs    # 19/19  /rewind + double-ESC interrupt
 node _smoke_select.mjs    # 13/13  drag-select copy
 node _smoke_anchor.mjs    #  5/5   ink cursor API + #982 fullscreen compensation

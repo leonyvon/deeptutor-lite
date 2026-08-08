@@ -97,6 +97,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
   // copied to the clipboard and the selection is cleared.
   const [selection, setSelection] = useState<ScreenSelection | null>(null);
   const [mouseDown, setMouseDown] = useState(false);
+  // Current top row of the TextInput render window (0 when not windowed);
+  // lets extractInputSelectionText map screen rows back to buffer lines.
+  const inputViewportRef = useRef(0);
 
   // Streaming delta batching: accumulate text_delta events and flush them at
   // most every STREAM_FLUSH_MS, coalescing several tokens per setState. This
@@ -152,7 +155,11 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     1,
     estimateInputLines(input, Math.max(termWidth - 4, 10))
   );
-  const inputAreaHeight = Math.min(MAX_INPUT_LINES, 2 + inputLines);
+  // Windowed: content beyond MAX_INPUT_LINES-2 rows scrolls inside the box
+  // (TextInput renders only the window), so the area height is capped at the
+  // visible content cap, never overflowing the box.
+  const visibleInputLines = Math.min(inputLines, MAX_INPUT_LINES - 2);
+  const inputAreaHeight = Math.min(MAX_INPUT_LINES, 2 + visibleInputLines);
 
   // 1-based screen row of the input box's first CONTENT line (the box spans
   // inputAreaHeight rows directly above the 2-row status bar). Used both for
@@ -450,7 +457,9 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
               Math.max(termWidth - 4, 10),
               inputContentTopRow,
               5,
-              selection
+              selection,
+              inputViewportRef.current,
+              MAX_INPUT_LINES - 2
             );
             const combined = [text, inputText].filter(Boolean).join("\n");
             if (combined) {
@@ -1224,6 +1233,8 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 blinkPaused={mouseDown}
                 menuOpen={menuOpen}
                 selection={selection}
+                maxLines={MAX_INPUT_LINES - 2}
+                viewportRef={inputViewportRef}
                 // Anchor the hardware cursor inside the input box so the
                 // Windows Terminal IME composition window (pinyin pre-edit)
                 // follows the caret instead of the last written row.

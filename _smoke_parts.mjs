@@ -182,7 +182,72 @@ assert(submitted === "你好中\naa\nbb\n后", `submit delivers merged text (got
 const out = outText();
 assert(out.includes("已粘贴"), "block placeholder rendered inline (filled box, label [已粘贴 N 行])");
 
+// 9. windowed rendering: content beyond maxLines scrolls INSIDE the box
+// (regression: App clamps inputAreaHeight at MAX_INPUT_LINES=8 while
+// TextInput kept rendering every line, so lines past the cap overflowed the
+// box — ink Box overflow is 'visible' by default).
 inst.unmount();
+chunks.length = 0;
+// Accessor ref: TextInput writes viewportRef.current on every render, which
+// synchronously updates vpValue — no parent re-render needed (Home only
+// triggers TextInput's internal setState, so a Harness useEffect would miss
+// it).
+let vpValue = 0;
+const vpRef = {
+  _v: 0,
+  get current() { return this._v; },
+  set current(v) { this._v = v; vpValue = v; },
+};
+function WindowedHarness() {
+  const [parts, setParts] = React.useState([]);
+  return React.createElement(TextInput, {
+    parts,
+    onChange: (p) => { setParts(p); onChangeLog.push(p); },
+    onSubmit: (t) => { submitted = t; },
+    focus: true,
+    placeholder: "输入消息",
+    screenRow: 22,
+    screenColBase: 5,
+    maxLines: 6,
+    viewportRef: vpRef,
+  });
+}
+const inst2 = render(React.createElement(WindowedHarness), { stdin, stdout, exitOnCtrlC: false });
+await delay(400); // mount
+
+// Long text that wraps to 7 content lines (> maxLines 6) at width 80-4=76.
+// Line 0 is 76 X's, lines 1..6 are 76 A's — lets us tell which window
+// position is rendered (X row only visible at the top).
+send("X".repeat(76) + "A".repeat(76 * 6));
+await waitFor(() => {
+  const p = onChangeLog.at(-1);
+  return p && p.length === 1 && p[0].text && p[0].text.length === 76 * 7;
+}, "7-line input typed");
+chunks.length = 0; // snapshot output AFTER the input settled
+await delay(250); // let ink flush the final frame
+
+const clean = (s) => s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").replace(/\x1b[()][0-9A-B]/g, "");
+const nonEmpty = clean(chunks.join("")).split("\n").filter((l) => l.trim().length > 0).length;
+assert(nonEmpty === 6, `windowed render caps rows at maxLines (rendered ${nonEmpty} rows, expected 6)`);
+assert(vpValue === 1, `viewTop = lines - maxLines when caret at end (viewport=${vpValue}, expected 1)`);
+const atBottom = clean(chunks.join("")).split("\n").filter((l) => l.trim().length > 0);
+assert(
+  !atBottom.some((l) => l.includes("X")),
+  "caret at end: X row NOT visible (window scrolled to bottom)"
+);
+
+// Home moves the caret to line 0 → the window scrolls to the top (caret row
+// always visible): viewTop back to 0, X row visible again.
+send("\x1b[H");
+await delay(250);
+assert(vpValue === 0, `Home scrolls window to top (viewport=${vpValue}, expected 0)`);
+const afterHome = clean(chunks.join("")).split("\n").filter((l) => l.trim().length > 0);
+assert(
+  afterHome.some((l) => l.includes("X")),
+  "Home: first content line visible (window scrolled to top)"
+);
+
+inst2.unmount();
 console.log(failures === 0 ? "\nALL SMOKE TESTS PASSED" : `\n${failures} FAILURES`);
 console.error(`DIAG: asserts ran = ${assertCount}, failures = ${failures}`);
 process.exit(failures === 0 ? 0 : 1);

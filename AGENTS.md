@@ -167,6 +167,12 @@
 50. **滚动门控只挡按键冲突，不挡处理中/ask**：滚轮/PgUp/PgDn 的 isActive 曾写死 `mode==="chat" && !isProcessing` → AI thinking 时和 ui-ask 面板弹出时**页面锁死**（真实事故）。滚动查看历史在处理中/选择题弹出时是合法需求；AskPicker 只消费 ↑↓/Enter/ESC，与滚动无冲突 → 门控放宽为 `chat || ask`。
 51. **先保存再置空**：错误提示 `Incorrect. Expected: "..."` 曾在 `topic.pendingQuestion = null` **之后**读 expectedAnswer → 永远显示 `(unknown)`。置空前先存局部副本。
 
+### 3.13 输入框窗口化滚动（高度预算溢出修复）
+
+52. **高度被 clamp 时内容仍会全部渲染**（真实事故：用户"输入框第七行开始溢出"）：App 预算 `inputAreaHeight = min(MAX=8, 2+inputLines)`，但 TextInput 无条件渲染所有 `buildLines` 行（每行 `height={1}`）→ 内容行 ≥7 时预算封顶 8、实际渲染 9+ 行，**ink Box 默认 `overflow: visible`（Box.js）**，超出的行直接画出框外压住状态栏/消息区。根因不是 ink 布局 bug，是"渲染行数 vs 高度预算"失配。
+53. **窗口化三处行号必须联动**：修复 = TextInput 加 `maxLines` prop——`viewTop = clamp(caretLoc.row-(maxLines-1), 0, lines.length-maxLines)`（caret 行恒在窗口最后一行，Home/End/↑↓ 移动 caret 即滚动窗口），渲染只画 `lines.slice(viewTop, viewTop+maxLines)`。三处映射同步改：① 渲染循环的 caret 判定用**全量行号** `bufRow = viewTop+r`；② 光标锚定 `setCursorPosition` 用**窗口内行号** `screenRow + caretLoc.row - viewTop`（否则 IME 定位偏到窗口外）；③ 选区提取 `extractInputSelectionText` 加 viewTop/maxLines 参数，屏幕行 y → buffer 行 `viewTop+(y-screenRow)`，`lastRow = screenRow + min(lines.length, maxLines) - 1`。App 侧：`visibleInputLines = min(inputLines, MAX-2)`、`viewportRef`（useRef）由 TextInput 每帧写入当前 viewTop，鼠标释放时提取选区用 `inputViewportRef.current`。
+54. **headless 断言小心 React 渲染时机**：Home 键只触发 TextInput 内部 setState → 父组件（Harness）不重渲染 → 在父组件 `useEffect` 里读 `viewportRef.current` 会读到**旧值**。正确做法：viewportRef 用**访问器对象**（`{ get current(), set current(v){同步外部变量} }`）替代 `useRef`，TextInput 每次渲染写 ref 即实时同步。窗口化断言：输入 >maxLines 行内容后数渲染非空行数 ≤ maxLines、caret 在末尾时 viewTop = lines.length-maxLines、Home 后 viewTop=0 且首行（用独特前缀如 `X` 行区分窗口位置）重新可见。
+
 ---
 
 ## 4. 失误记录（避免重蹈）
@@ -189,7 +195,7 @@
 
 - 运行：`npm run dev`（或 build 后 `node dist/index.js`）；pwsh + Windows Terminal
 - 构建：`npm run build`（tsc，必须 0 错误）
-- 冒烟/复现脚本（项目根）：`_smoke_parts.mjs`（17/17 交互）、`_smoke_rewind.mjs`（19/19）、`_smoke_select.mjs`（13/13 划词）、`_smoke_anchor.mjs`（5/5 ink 光标后缀 + #982 全屏补偿）、`_smoke_ask.mjs`（51/51：ask 模块/ui_ask 工具/字母评分+prose expected 映射/AskPicker 渲染+窗口化+截断）、`_smoke_math.mjs`（33/33：mathToUnicode 转换/extractMath 代码保护/renderMarkdown 集成）；复现脚本 `_repro_height.mjs`（软换行）、`_repro_nl_height.mjs`（硬换行）、`_repro_askpick.mjs`（选项拆块）、`_repro_4opts.mjs`（选项溢出）、`_repro_edge.mjs`（矮终端+滚动）、`_repro_cursor982.mjs`（ink #982 全屏 off-by-one）
+- 冒烟/复现脚本（项目根）：`_smoke_parts.mjs`（22/22：交互+窗口化滚动）、`_smoke_rewind.mjs`（19/19）、`_smoke_select.mjs`（13/13 划词）、`_smoke_anchor.mjs`（5/5 ink 光标后缀 + #982 全屏补偿）、`_smoke_ask.mjs`（51/51：ask 模块/ui_ask 工具/字母评分+prose expected 映射/AskPicker 渲染+窗口化+截断）、`_smoke_math.mjs`（33/33：mathToUnicode 转换/extractMath 代码保护/renderMarkdown 集成）；复现脚本 `_repro_height.mjs`（软换行）、`_repro_nl_height.mjs`（硬换行）、`_repro_askpick.mjs`（选项拆块）、`_repro_4opts.mjs`（选项溢出）、`_repro_edge.mjs`（矮终端+滚动）、`_repro_cursor982.mjs`（ink #982 全屏 off-by-one）
 - 数据：`~/.deeptutor/`（sessions jsonl / kbs / knowledge sqlite / auth.json）
 - 状态栏两行：第 1 行 `[deeptutor-lite] @ provider | KB: xxx` + 模型/会话；第 2 行 `拖拽选中文本，松开即复制 | 双击ESC中断AI回答 | CTRL+C 清空输入框/退出程序`
 - 快捷键现状：Enter 提交 / Ctrl+Enter 换行 / ↑↓ 光标跨行（菜单/选择器打开时归它们）/ PgUp/PgDn + 滚轮 滚动 / Ctrl+C 先清空再退出 / **双击 ESC 中断回答（400ms 窗口，仅处理中有效）** / **/rewind 回退历史对话（回退到 user prompt 自动填回输入框）** / 无修饰键拖拽 = 自绘选区复制（消息区+输入框全覆盖）/ Shift+拖拽 = WT 原生选区
@@ -208,6 +214,7 @@
 - AskPicker：wrapToLines 连续块 / maxHeight 行预算窗口化 / 题干选项剔除（cleanQuestion）/ 超预算选项截断（"…"）/ footer truncate
 - 状态栏第二行文案更新
 - 滚动锁死修复：滚轮/PgUp/PgDn 门控放宽（chat||ask，处理中可回看历史）
+- 输入框窗口化滚动（修复"第七行溢出"）：TextInput maxLines + viewTop + viewportRef 三处行号联动（§3.13-52/53/54）
 - mastery 评分修复：expected 为 prose 时映射到选项字母（精确→语义 argmax）+ Expected 提示修复 + 描述要求传字母
 - LaTeX 数学渲染（math.ts 转换器 + markdownMath 主题 + extractMath 代码保护 + 流式未闭合处理）
 - ink #982 全屏 off-by-one 补偿（TextInput 发布 y+1，_smoke_anchor Part C 固化断言）

@@ -247,21 +247,29 @@ function applyInputSelection(
  * box. Rows outside the input's content rows contribute nothing; selected
  * rows are sliced by content columns and joined with "\n". Block segments
  * contribute their label chars; the 2 padding columns are never copied.
+ *
+ * viewTop/maxLines describe the rendered window (see TextInput's maxLines):
+ * screen row y maps to buffer line viewTop + (y - screenRow); only the
+ * windowed lines are visible on screen, so rows outside it yield nothing.
  */
 export function extractInputSelectionText(
   parts: InputPart[],
   width: number,
   screenRow: number,
   screenColBase: number,
-  selection: ScreenSelection
+  selection: ScreenSelection,
+  viewTop = 0,
+  maxLines = Number.POSITIVE_INFINITY
 ): string {
   const lines = buildLines(parts, width);
   const { topY, bottomY, topX, bottomX } = normalizeSelection(selection);
-  const lastRow = screenRow + lines.length - 1;
+  const windowCount = Math.min(lines.length, maxLines);
+  const lastRow = screenRow + windowCount - 1;
   const out: string[] = [];
   for (let y = topY; y <= bottomY; y++) {
     if (y < screenRow || y > lastRow) continue;
-    const line = lines[y - screenRow];
+    const line = lines[viewTop + (y - screenRow)];
+    if (!line) continue;
     const colStart = y === topY ? Math.max(0, topX - screenColBase) : 0;
     const colEnd =
       y === bottomY
@@ -301,6 +309,18 @@ interface TextInputProps {
   menuOpen?: boolean;
   /** App-drawn selection in screen coords (1-based); highlighted inline. */
   selection?: ScreenSelection | null;
+  /**
+   * Max CONTENT lines rendered (windowed scroll): when the wrapped input
+   * exceeds this, the box keeps this height and scrolls internally, always
+   * keeping the caret line visible. Undefined = no cap (grow unbounded).
+   */
+  maxLines?: number;
+  /**
+   * Receives the current window's first buffer line index (0 when not
+   * windowed). The parent uses it to map screen rows back to buffer lines
+   * for selection extraction (extractInputSelectionText).
+   */
+  viewportRef?: React.MutableRefObject<number>;
 }
 
 export function TextInput({
@@ -315,6 +335,8 @@ export function TextInput({
   blinkPaused = false,
   menuOpen = false,
   selection,
+  maxLines,
+  viewportRef,
 }: TextInputProps): React.ReactElement {
   const { stdout } = useStdout();
   // ink's cursor API: publish the input caret position so ink accounts for it
@@ -411,6 +433,27 @@ export function TextInput({
     }
     return { row: 0, col: 0 };
   }, [lines, caret]);
+
+  // Windowed rendering: when the wrapped input exceeds `maxLines` content
+  // rows, only a window of maxLines rows is rendered and the box scrolls
+  // internally, always keeping the caret row visible (caret row ends up at
+  // the window's LAST line; scrolling up is done by moving the caret). The
+  // first rendered row of the window is exposed via viewportRef so the
+  // parent can map screen rows back to buffer lines (selection extraction).
+  const viewTop = useMemo(() => {
+    if (!maxLines || lines.length <= maxLines) return 0;
+    return Math.max(0, Math.min(caretLoc.row - (maxLines - 1), lines.length - maxLines));
+  }, [lines.length, maxLines, caretLoc.row]);
+
+  useEffect(() => {
+    if (viewportRef) viewportRef.current = viewTop;
+  }, [viewTop, viewportRef]);
+
+  // Rendered window: buffer rows [viewTop, viewTop + windowCount).
+  const windowLines = useMemo(
+    () => (maxLines && lines.length > maxLines ? lines.slice(viewTop, viewTop + maxLines) : lines),
+    [lines, maxLines, viewTop]
+  );
 
   // ---- Editing helpers -----------------------------------------------------
   const partLen = (p: InputPart): number => (p.kind === "text" ? p.text.length : 1);
@@ -711,10 +754,10 @@ export function TextInput({
       setCursorPosition(undefined);
       return;
     }
-    const row = screenRow + caretLoc.row;
+    const row = screenRow + caretLoc.row - viewTop;
     const col = (screenColBase ?? 1) + caretLoc.col;
     setCursorPosition({ x: col - 1, y: row });
-  }, [caretLoc.row, caretLoc.col, focus, screenRow, screenColBase, setCursorPosition]);
+  }, [caretLoc.row, caretLoc.col, focus, screenRow, screenColBase, setCursorPosition, viewTop]);
 
   // ---- Render -------------------------------------------------------------
   return (
@@ -722,12 +765,13 @@ export function TextInput({
       {lines.length === 0 ? (
         <Text color={theme.textMuted}>{placeholder ?? ""}</Text>
       ) : (
-        lines.map((line, r) => {
+        windowLines.map((line, r) => {
           // Screen row of this content line (1-based): the input box's first
           // content row is `screenRow` (App passes rows - inputAreaHeight), so
-          // content line 0 sits at screen row screenRow, line r at screenRow+r
+          // window line 0 sits at screen row screenRow, line r at screenRow+r
           // (same convention as the hardware-cursor anchor `screenRow +
-          // caretLoc.row`).
+          // caretLoc.row - viewTop`).
+          const bufRow = viewTop + r;
           const y = (screenRow ?? 0) + r;
           // Content col 0 sits at 1-based screen col screenColBase (App: 5),
           // so content col = x - screenColBase (input box has its own padding
@@ -761,7 +805,7 @@ export function TextInput({
                 // The block is an atomic token: it must never be compressed or
                 // wrap internally, so flexShrink={0} + wrap="truncate" (an
                 // over-wide label truncates at the line end instead).
-                const isCaretHere = r === caretLoc.row && seg.pi === caret.pi;
+                const isCaretHere = bufRow === caretLoc.row && seg.pi === caret.pi;
                 const caretGlyph =
                   focus && (cursorOn ? (
                     <Text color={theme.accent}>✏️</Text>
@@ -791,7 +835,7 @@ export function TextInput({
                 );
               }
               // text segment
-              const isCaretRow = r === caretLoc.row;
+              const isCaretRow = bufRow === caretLoc.row;
               const hasCaret =
                 isCaretRow &&
                 seg.pi === caret.pi &&
