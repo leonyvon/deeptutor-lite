@@ -4,7 +4,6 @@ import type { DeeptutorRuntime, ModelChoice } from "../../agent/harness.js";
 import { TextInput, flatPartsText } from "./TextInput.js";
 import { theme } from "./theme.js";
 
-const OPENAI_COMPAT_ID = "openai-compat";
 const WINDOW_SIZE = 10;
 
 interface ModelPickerProps {
@@ -40,11 +39,7 @@ export function ModelPicker({
 }: ModelPickerProps): React.ReactElement {
   // ---- Provider list (dynamic from runtime catalog) ----
   const providers = useMemo(() => {
-    const builtIn = runtime.models
-      .getProviders()
-      .filter((p) => p.id !== OPENAI_COMPAT_ID)
-      .map((p) => ({ id: p.id, name: p.name }));
-    return [...builtIn, { id: OPENAI_COMPAT_ID, name: "OpenAI Compatible" }];
+    return runtime.models.getProviders().map((p) => ({ id: p.id, name: p.name }));
   }, [runtime]);
 
   // ---- Filtered providers (search on provider step) ----

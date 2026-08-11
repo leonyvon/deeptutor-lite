@@ -11,10 +11,9 @@
  * falls back to environment variables.
  */
 import { AgentHarness } from "@earendil-works/pi-agent-core";
-import { createModels, createProvider } from "@earendil-works/pi-ai";
+import { createModels } from "@earendil-works/pi-ai";
 import type { MutableModels } from "@earendil-works/pi-ai";
 import type { Model } from "@earendil-works/pi-ai";
-import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { Session, JsonlSessionMetadata, JsonlSessionRepo, AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import type { Config, SearchConfig, ToolContext } from "../types.js";
@@ -27,11 +26,6 @@ import { createPythonRunnerTool } from "../tools/python_runner.js";
 import { createMasteryTools } from "../tools/mastery.js";
 import { createKnowledgeTools } from "../tools/knowledge.js";
 import { createAskUserTool } from "../tools/ask_user.js";
-
-/** OpenAI-compatible provider id (Ollama etc.). */
-export const PROVIDER_ID = "openai-compat";
-/** OpenCode Zen Go provider id (deepseek-v4-flash etc.). */
-export const OPENCODE_GO_PROVIDER_ID = "opencode-go";
 
 const SYSTEM_PROMPT = `You are deeptutor, a document tutoring assistant. You help learners study documents from a knowledge base using:
 - knowledge_search / knowledge_add (RAG over the active knowledge base)
@@ -58,43 +52,6 @@ export interface ModelChoice {
   modelName: string;
   baseUrl?: string;
   reasoning: boolean;
-}
-
-function openAICompatModel(cfg: Config, modelId: string, baseUrl: string): Model<"openai-completions"> {
-  return {
-    id: modelId,
-    name: modelId,
-    api: "openai-completions",
-    provider: PROVIDER_ID,
-    baseUrl,
-    reasoning: false,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 32768,
-    maxTokens: 8192,
-  };
-}
-
-function openAICompatProvider(
-  cfg: Config,
-  model: Model<"openai-completions">
-): ReturnType<typeof createProvider> {
-  return createProvider({
-    id: PROVIDER_ID,
-    name: "OpenAI Compatible",
-    baseUrl: model.baseUrl,
-    auth: {
-      apiKey: {
-        name: "OpenAI Compatible API key",
-        resolve: async () => ({
-          auth: { apiKey: cfg.model.apiKey ?? "ollama" },
-          source: "config",
-        }),
-      },
-    },
-    models: [model],
-    api: openAICompletionsApi(),
-  });
 }
 
 /** Build all deeptutor tools for the given config. */
@@ -144,7 +101,11 @@ export class DeeptutorRuntime {
     if (!session) {
       throw new Error("Cannot build harness without a session");
     }
-    const model = this.resolveModel(this.config.model.provider ?? "openai-compat", this.config.model.model);
+    const { provider, model: modelId } = this.config.model;
+    if (!provider || !modelId) {
+      throw new Error("No model configured. Run /model to select a model first.");
+    }
+    const model = this.resolveModel(provider, modelId);
     const toolContext: ToolContext = this.ask ? { ask: this.ask } : {};
     return new AgentHarness({
       session,
@@ -160,14 +121,8 @@ export class DeeptutorRuntime {
     });
   }
 
-  /** Resolve (and register if needed) a model in the models collection. */
+  /** Resolve a model in the built-in catalog. */
   private resolveModel(providerId: string, modelId: string): Model<any> {
-    if (providerId === PROVIDER_ID) {
-      // openai-compat: (re)register a custom provider with the current endpoint.
-      const model = openAICompatModel(this.config, modelId, this.config.model.baseUrl ?? "http://127.0.0.1:11434/v1");
-      this.models.setProvider(openAICompatProvider(this.config, model));
-      return model;
-    }
     const provider = this.models.getProvider(providerId);
     if (!provider) {
       throw new Error(
@@ -187,7 +142,6 @@ export class DeeptutorRuntime {
   listModelChoices(): ModelChoice[] {
     const out: ModelChoice[] = [];
     for (const provider of this.models.getProviders()) {
-      if (provider.id === PROVIDER_ID) continue; // handled below (custom endpoint)
       for (const m of this.models.getModels(provider.id)) {
         out.push({
           providerId: provider.id,
@@ -199,16 +153,6 @@ export class DeeptutorRuntime {
         });
       }
     }
-    // current openai-compat endpoint (single custom model)
-    const c = this.config.model;
-    out.push({
-      providerId: PROVIDER_ID,
-      providerName: "OpenAI Compatible",
-      modelId: c.model,
-      modelName: c.model,
-      baseUrl: c.baseUrl,
-      reasoning: false,
-    });
     return out;
   }
 
@@ -217,28 +161,19 @@ export class DeeptutorRuntime {
    * Mirrors pi coding agent's /model: providers requiring an API key fail
    * loudly here (no silent switch to a broken model).
    */
-  async switchModel(providerId: string, modelId: string, opts?: { baseUrl?: string; apiKey?: string }): Promise<Model<any>> {
+  async switchModel(providerId: string, modelId: string, opts?: { apiKey?: string }): Promise<Model<any>> {
     const cfg = this.config.model;
-    if (providerId === PROVIDER_ID) {
-      cfg.provider = PROVIDER_ID;
-      cfg.model = modelId;
-      if (opts?.baseUrl) cfg.baseUrl = opts.baseUrl;
-      if (opts?.apiKey !== undefined) cfg.apiKey = opts.apiKey;
-    } else {
-      const provider = this.models.getProvider(providerId);
-      if (!provider) {
-        throw new Error(`Unknown provider: ${providerId}`);
-      }
-      cfg.provider = providerId;
-      cfg.model = modelId;
-      if (opts?.apiKey !== undefined) await this.setApiKey(providerId, opts.apiKey);
-      // built-in providers use their catalog endpoint; drop stale openai-compat baseUrl.
-      delete cfg.baseUrl;
-      if (!(await this.authStatus(providerId)).configured) {
-        throw new Error(
-          `No API key for ${provider.name}. Press /model to enter one (saved to ~/.deeptutor/auth.json), or set its env var (e.g. OPENCODE_API_KEY).`
-        );
-      }
+    const provider = this.models.getProvider(providerId);
+    if (!provider) {
+      throw new Error(`Unknown provider: ${providerId}`);
+    }
+    cfg.provider = providerId;
+    cfg.model = modelId;
+    if (opts?.apiKey !== undefined) await this.setApiKey(providerId, opts.apiKey);
+    if (!(await this.authStatus(providerId)).configured) {
+      throw new Error(
+        `No API key for ${provider.name}. Press /model to enter one (saved to ~/.deeptutor/auth.json), or set its env var (e.g. OPENCODE_API_KEY).`
+      );
     }
     const model = this.resolveModel(cfg.provider, cfg.model);
     // No harness yet (lazy session): the switch still persists and will be
@@ -255,14 +190,6 @@ export class DeeptutorRuntime {
    * Resolution order matches pi: stored credential (auth.json) → env vars.
    */
   async authStatus(providerId: string): Promise<{ needsKey: boolean; configured: boolean; source: string }> {
-    if (providerId === PROVIDER_ID) {
-      // openai-compat: key optional (Ollama needs none); stored key used when present.
-      return {
-        needsKey: false,
-        configured: true,
-        source: this.config.model.apiKey ? "config" : "optional",
-      };
-    }
     const provider = this.models.getProvider(providerId);
     if (!provider) {
       return { needsKey: false, configured: false, source: "unknown provider" };
@@ -317,26 +244,26 @@ export class DeeptutorRuntime {
   /** Current model descriptor (for the status bar). */
   currentModel(): ModelChoice {
     const c = this.config.model;
-    const provider = this.models.getProvider(c.provider ?? PROVIDER_ID);
+    const provider = c.provider ? this.models.getProvider(c.provider) : undefined;
     const harness = this.harness;
     if (!harness) {
       // No session yet: report the configured model without a live harness.
       return {
-        providerId: c.provider ?? PROVIDER_ID,
-        providerName: provider?.name ?? "OpenAI Compatible",
-        modelId: c.model,
-        modelName: c.model,
-        baseUrl: c.baseUrl,
+        providerId: c.provider ?? "none",
+        providerName: provider?.name ?? "not set",
+        modelId: c.model ?? "not set",
+        modelName: c.model ?? "not set",
+        baseUrl: undefined,
         reasoning: false,
       };
     }
     const m = harness.getModel();
     return {
-      providerId: c.provider ?? PROVIDER_ID,
-      providerName: provider?.name ?? "OpenAI Compatible",
-      modelId: c.model,
-      modelName: m.name ?? c.model,
-      baseUrl: m.baseUrl ?? c.baseUrl,
+      providerId: c.provider ?? "none",
+      providerName: provider?.name ?? "not set",
+      modelId: c.model ?? "not set",
+      modelName: m.name ?? c.model ?? "not set",
+      baseUrl: m.baseUrl,
       reasoning: m.reasoning ?? false,
     };
   }

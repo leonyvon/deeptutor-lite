@@ -20,7 +20,7 @@ import type { AddOptions, DoctorReport, SearchMode, SearchResponse, SymbolSearch
  * @param cfg Knowledge-base config (rootDir is the base for relative source
  *            paths, indexDir is where the RAG index lives).
  * @param embedding Model config (embeddingModel is used as the embedding
- *            model against the OpenAI-compatible baseUrl).
+ *            model against the OpenAI-compatible embeddingBaseUrl).
  */
 export function createKnowledgeTools(
 	cfg: Config["kb"],
@@ -35,7 +35,7 @@ export function createKnowledgeTools(
 				dataDir: cfg.indexDir,
 				embedding: {
 					provider: embedding.embeddingModel ? `openai:${embedding.embeddingModel}` : "openai",
-					baseUrl: embedding.baseUrl,
+					baseUrl: embedding.embeddingBaseUrl,
 					apiKey: embedding.apiKey ?? "",
 					fallback: "",
 				},

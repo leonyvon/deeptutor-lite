@@ -42,10 +42,11 @@ function defaults(): Config {
       maxTimeout: 300,
     },
     model: {
-      provider: "openai-compat",
-      baseUrl: "http://127.0.0.1:11434/v1",
-      model: "qwen3:8b",
+      // No chat model default: the user configures provider/model via /model
+      // (persisted to ~/.deeptutor/config.json). Only the RAG embedding
+      // service keeps defaults so the knowledge base works out of the box.
       embeddingModel: "nomic-embed-text",
+      embeddingBaseUrl: "http://127.0.0.1:11434/v1",
     },
     session: {
       dir: join(home, "sessions"),
@@ -92,7 +93,14 @@ export function loadConfig(): Config {
     search: { ...c.search, apiKey: resolveEnvVars(c.search.apiKey), proxy: c.search.proxy ? expandHome(c.search.proxy) : undefined },
     kb: { ...c.kb, rootDir: expandHome(resolveEnvVars(c.kb.rootDir)), indexDir: expandHome(resolveEnvVars(c.kb.indexDir)), defaultKB: resolveEnvVars(c.kb.defaultKB) },
     python: { ...c.python },
-    model: { ...c.model, provider: c.model.provider ?? "openai-compat", baseUrl: c.model.baseUrl ? resolveEnvVars(c.model.baseUrl) : undefined, model: resolveEnvVars(c.model.model), embeddingModel: resolveEnvVars(c.model.embeddingModel), apiKey: c.model.apiKey ? resolveEnvVars(c.model.apiKey) : undefined },
+    model: {
+      ...c.model,
+      provider: c.model.provider,
+      model: c.model.model ? resolveEnvVars(c.model.model) : undefined,
+      apiKey: c.model.apiKey ? resolveEnvVars(c.model.apiKey) : undefined,
+      embeddingModel: resolveEnvVars(c.model.embeddingModel),
+      embeddingBaseUrl: resolveEnvVars(c.model.embeddingBaseUrl),
+    },
     session: { ...c.session, dir: expandHome(resolveEnvVars(c.session.dir)) },
   });
   return resolve(cfg);
