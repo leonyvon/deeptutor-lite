@@ -27,7 +27,7 @@ import { StatusBar } from "./StatusBar.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { BraveConfig } from "./BraveConfig.js";
 import { SessionPicker } from "./SessionPicker.js";
-import { AskPicker } from "./AskPicker.js";
+import { AskPicker, computeAskPickerLayout } from "./AskPicker.js";
 import { subscribeAsk, getPendingAsk, resolveAsk, restoreAsk } from "./ask.js";
 import { findUnfinishedAskToolCall, buildResumedToolResult, RESUME_PROMPT_TEXT } from "./resume.js";
 import { sessionEntriesToMessages, loadSessionPreview, buildRewindTargets } from "./history.js";
@@ -175,6 +175,29 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
     () => totalBufferLines(messages, termWidth),
     [messages, termWidth]
   );
+
+  // Ask mode — PRECOMPUTED height allocation (no guessing):
+  // computeAskPickerLayout (shared with the picker component) returns the
+  // picker's EXACT rendered height for the current question/options/width.
+  // The message history gets every remaining row; the picker takes only what
+  // it needs. Sum = content height, so no void and no overflow, whatever the
+  // content. Note the ask-mode content area is rows - 2 (the input box is not
+  // rendered in ask mode — only the 2-row status bar remains).
+  const askContentWidth = Math.max((process.stdout.columns ?? 80) - 4, 10);
+  const askPickerMaxHeight = mode.type === "ask" ? rows - 2 : 0;
+  const askLayout =
+    mode.type === "ask"
+      ? computeAskPickerLayout(
+          mode.question,
+          mode.options,
+          askContentWidth,
+          askPickerMaxHeight,
+          mode.selectedIndex
+        )
+      : null;
+  const askMessageHeight = askLayout
+    ? Math.max(0, askPickerMaxHeight - askLayout.totalRows)
+    : visibleHeight;
 
   const maxScroll = Math.max(0, totalLines - visibleHeight);
 
@@ -516,10 +539,18 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
             // Both areas self-clamp to their own rows: the message buffer and
             // the input box. A selection spanning both joins with "\n"; a
             // selection entirely in one area leaves the other empty.
+            //
+            // CRITICAL: the extraction window height must match the height the
+            // MessageList RENDERED with. In ask mode the message area is
+            // windowed to askMessageHeight (AskPicker takes the rest), so a
+            // screen row maps to a different buffer row than in chat mode —
+            // using the full visibleHeight here shifts the mapping and copies
+            // the WRONG rows (user-reported: selection highlight vs copied
+            // text mismatch while the picker is up).
             const text = extractSelectionText(
               messages,
               termWidth,
-              visibleHeight,
+              mode.type === "ask" ? askMessageHeight : visibleHeight,
               scrollOffset,
               selection
             );
@@ -1025,12 +1056,23 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
           justifyContent="flex-end"
           overflow="hidden"
         >
-          <MessageList
-            messages={messages}
-            scrollOffset={scrollOffset}
-            visibleHeight={visibleHeight}
-            selection={selection}
-          />
+          {mode.type === "ask" ? (
+            <Box height={askMessageHeight} flexShrink={0}>
+              <MessageList
+                messages={messages}
+                scrollOffset={scrollOffset}
+                visibleHeight={askMessageHeight}
+                selection={selection}
+              />
+            </Box>
+          ) : (
+            <MessageList
+              messages={messages}
+              scrollOffset={scrollOffset}
+              visibleHeight={visibleHeight}
+              selection={selection}
+            />
+          )}
           {mode.type === "chat" &&
             isProcessing &&
             !streamingInProgress && (
@@ -1058,7 +1100,7 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                     : prev
                 )
               }
-              maxHeight={rows - 2}
+              maxHeight={askPickerMaxHeight}
             />
           )}
         </Box>
@@ -1211,9 +1253,12 @@ export function App({ runtime, repo }: AppProps): React.ReactElement {
                 const history = sessionEntriesToMessages(entries);
                 setMessages(history);
                 setScrollOffset(0);
-                // Resume an unfinished interactive question from the previous
-                // run (if the session tail left one).
-                await maybeResumeUnfinishedAsk(opened);
+                // Resume is NOT called here on purpose: runtime.setSession(opened)
+                // above already changes runtime.session, which fires the
+                // [runtime.session] effect → maybeResumeUnfinishedAsk. Calling it
+                // again would run the resume TWICE (two "检测到上次未完成的选择题"
+                // notices, two restoreAsk registrations for the same question).
+                // Single entry point = the session-change effect below.
               } catch (err: any) {
                 setMessages((prev) => [
                   ...prev,

@@ -228,6 +228,35 @@ assert(
 );
 instC3.unmount();
 
+// ---- Part D: extraction window must match the RENDERED window (ask mode) ----
+// ask 模式下 MessageList 用 askMessageHeight 渲染(窗口从 buffer 尾部截取),
+// release 划词时 extractSelectionText 必须用同一个高度;若用全量 visibleHeight
+// (修复前的 bug),viewStart 不同 → 屏幕行 → buffer 行映射错位 → 复制内容与
+// 高亮位置不符(用户实测:选择题菜单弹出后划词内容错位)。
+// buffer(8 行):0"You" 1"AAA" 2spacer 3"You" 4"BBB" 5spacer 6"You" 7"CCC"
+const msgsD = [
+  { type: "user", text: "AAA", id: "d1" },
+  { type: "user", text: "BBB", id: "d2" },
+  { type: "user", text: "CCC", id: "d3" },
+];
+// ask 渲染窗口高度 4:viewStart = 8-4 = 4 → 屏幕行 1..4 = buffer 行 4..7
+// (BBB, spacer, You, CCC)。PAD_COLS=2 → 内容列 0 在屏幕列 3。
+const askSelRow1 = { startX: 3, startY: 1, endX: 99, endY: 1 };
+assert(
+  extractSelectionText(msgsD, termW, 4, 0, askSelRow1).includes("BBB"),
+  "ask-window: screen row 1 maps to buffer row 4 ('BBB') with window=4"
+);
+assert(
+  extractSelectionText(msgsD, termW, 4, 0, { startX: 3, startY: 4, endX: 99, endY: 4 }).includes("CCC"),
+  "ask-window: screen row 4 maps to buffer row 7 ('CCC') with window=4"
+);
+// 回归护栏:用全量窗口(修复前)提取同一 selection 得到的是 buffer 行 0
+// ("You"),不是渲染窗口内的 "BBB" —— 这就是划词错位的机制。
+assert(
+  !extractSelectionText(msgsD, termW, 8, 0, askSelRow1).includes("BBB"),
+  "regression guard: full-window (8) extraction of ask selection does NOT hit 'BBB' — caller must pass the rendered window height"
+);
+
 console.log(failures === 0 ? "\nALL SMOKE TESTS PASSED" : `\n${failures} FAILURES`);
 console.error(`DIAG: asserts ran = ${assertCount}, failures = ${failures}`);
 process.exit(failures === 0 ? 0 : 1);

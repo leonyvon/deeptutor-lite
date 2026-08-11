@@ -5,14 +5,119 @@ import { theme } from "./theme.js";
 import { wrapToLines } from "./MessageList.js";
 
 /** Question is context — truncate it before letting it steal option rows. */
-const QUESTION_CAP = 4;
+export const QUESTION_CAP = 4;
 /** Options always get at least this many rows when the terminal allows. */
-const MIN_OPTION_ROWS = 4;
+export const MIN_OPTION_ROWS = 4;
 /** Fixed chrome rows beyond question+options: margins 2 + borders 2 + padding
- *  2 + options marginTop 1 + footer marginTop 1 + footer 1 + windowed
- *  "(showing X of Y)" margin 1 + row 1 = 11. Always reserved (windowed case);
- *  when unwindowed the picker is 2 rows shorter than the cap — harmless. */
-const OVERHEAD = 11;
+ *  2 + options marginTop 1 + footer marginTop 1 + footer 1 = 9, plus the
+ *  windowed "(showing X of Y)" margin 1 + row 1 = 11 (windowed case). */
+export const OVERHEAD = 11;
+/** Chrome rows when the option window is NOT active (no "(showing" row). */
+export const OVERHEAD_UNWINDOWED = OVERHEAD - 2;
+
+/** LLM sloppiness guard: drop any question LINE whose content (after a label
+ *  prefix) exactly matches an option value — data-driven, so legit prose like
+ *  "A) 和 B) 哪个更好？" (content ≠ any option value) is always kept. */
+export function cleanQuestionText(
+  question: string,
+  options: Record<string, string>
+): string {
+  const optionValues = new Set(
+    Object.values(options).map((v) => v.trim().replace(/\s/g, ""))
+  );
+  return question
+    .split("\n")
+    .filter((line) => {
+      const m = line.trim().match(/^[•·\-*]?\s*[A-Za-z0-9]\s*[):：.、]\s*(.+)$/);
+      if (!m) return true;
+      return !optionValues.has(m[1].trim().replace(/\s/g, ""));
+    })
+    .join("\n");
+}
+
+export interface AskPickerLayout {
+  /** Question rows actually rendered (≤ QUESTION_CAP). */
+  questionShown: number;
+  /** Row budget for the option block (Infinity = uncapped). */
+  optionsBudget: number;
+  /** Windowed option slice [start, end). */
+  window: { start: number; end: number };
+  /** EXACT total rendered rows of the picker (chrome + question + options). */
+  totalRows: number;
+}
+
+/**
+ * Pure layout computation — the SINGLE source of truth for the picker's
+ * height. Used by BOTH the component (rendering) and the App (to allocate the
+ * remaining content-area rows to the message history), so the picker always
+ * takes exactly what it needs and the history fills the rest.
+ */
+export function computeAskPickerLayout(
+  question: string,
+  options: Record<string, string>,
+  contentWidth: number,
+  maxHeight: number | undefined,
+  selectedIndex: number
+): AskPickerLayout {
+  const entries = Object.entries(options);
+  const cleanQuestion = cleanQuestionText(question, options);
+  const questionRows = wrapToLines(cleanQuestion, contentWidth).length;
+
+  // Question rows actually shown: capped by QUESTION_CAP, and never allowed to
+  // eat the reserved MIN_OPTION_ROWS (computed against maxHeight). Undefined
+  // maxHeight = uncapped (smoke tests render without it).
+  const questionShown =
+    maxHeight === undefined
+      ? Math.min(questionRows, QUESTION_CAP)
+      : Math.min(
+          questionRows,
+          Math.max(1, maxHeight - OVERHEAD - MIN_OPTION_ROWS),
+          QUESTION_CAP
+        );
+
+  // Row budget for the OPTION block (selection always visible via the window).
+  const optionsBudget =
+    maxHeight === undefined
+      ? Number.POSITIVE_INFINITY
+      : Math.max(1, maxHeight - OVERHEAD - questionShown);
+
+  // Row count per option. Always count with the "  " (2-space) prefix — same
+  // width as "> ", so the count is identical whether selected or not.
+  const optionRowCounts = entries.map(([label, text]) =>
+    wrapToLines(`  ${label}) ${text}`, contentWidth).length
+  );
+
+  // Windowed option slice: start at the SELECTED option, extend backward while
+  // rows fit, then forward while rows fit — the selection stays visible.
+  let window: { start: number; end: number } = { start: 0, end: entries.length };
+  let usedRows = optionRowCounts.reduce((a, b) => a + b, 0);
+  if (entries.length > 0 && Number.isFinite(optionsBudget)) {
+    let start = selectedIndex;
+    let end = selectedIndex + 1;
+    let used = optionRowCounts[selectedIndex] ?? 1;
+    while (start > 0 && used + optionRowCounts[start - 1] <= optionsBudget) {
+      start--;
+      used += optionRowCounts[start];
+    }
+    while (end < entries.length && used + optionRowCounts[end] <= optionsBudget) {
+      used += optionRowCounts[end];
+      end++;
+    }
+    window = { start, end };
+    usedRows = used;
+  }
+  const windowed = window.end - window.start < entries.length;
+  // A selected option taller than the budget is capped at optionsBudget rows
+  // during rendering — mirror that here so totalRows stays exact.
+  const renderedOptionRows = Number.isFinite(optionsBudget)
+    ? Math.min(usedRows, optionsBudget)
+    : usedRows;
+
+  const totalRows =
+    (windowed ? OVERHEAD : OVERHEAD_UNWINDOWED) + questionShown + renderedOptionRows;
+
+  return { questionShown, optionsBudget, window, totalRows };
+}
 
 interface AskPickerProps {
   question: string;
@@ -36,73 +141,19 @@ export function AskPicker({
   const { stdout } = useStdout();
   const contentWidth = Math.max((stdout.columns ?? 80) - 4, 10);
 
-  // LLM sloppiness guard: sometimes the question text embeds the options
-  // ("A：先完成...") while they are also passed in `options`. Drop any
-  // question LINE whose content (after a label prefix) exactly matches an
-  // option value — data-driven, so legit prose like "A) 和 B) 哪个更好？"
-  // (content ≠ any option value) is always kept.
-  const cleanQuestion = useMemo(() => {
-    const optionValues = new Set(
-      Object.values(options).map((v) => v.trim().replace(/\s/g, ""))
-    );
-    return question
-      .split("\n")
-      .filter((line) => {
-        const m = line.trim().match(/^[•·\-*]?\s*[A-Za-z0-9]\s*[):：.、]\s*(.+)$/);
-        if (!m) return true;
-        return !optionValues.has(m[1].trim().replace(/\s/g, ""));
-      })
-      .join("\n");
-  }, [question, options]);
-
-  // Rows of the question (char-level CJK wrap).
-  const questionRows = wrapToLines(cleanQuestion, contentWidth).length;
-
-  // Question rows actually shown: capped by QUESTION_CAP, and never allowed to
-  // eat the reserved MIN_OPTION_ROWS (computed against maxHeight). Undefined
-  // maxHeight = uncapped (smoke tests render without it).
-  const questionShown = useMemo(() => {
-    if (maxHeight === undefined) return questionRows;
-    const questionBudget = Math.max(1, maxHeight - OVERHEAD - MIN_OPTION_ROWS);
-    return Math.min(questionRows, questionBudget);
-  }, [questionRows, maxHeight]);
-
-  // Row budget for the OPTION block (selection always visible via the window).
-  const optionsBudget = useMemo(() => {
-    if (maxHeight === undefined) return Number.POSITIVE_INFINITY;
-    return Math.max(1, maxHeight - OVERHEAD - questionShown);
-  }, [maxHeight, questionShown]);
-
-  // Row count per option. Always count with the "  " (2-space) prefix — same
-  // width as "> ", so the count is identical whether selected or not.
-  const optionRowCounts = useMemo(
+  // Layout is computed ONCE here and drives rendering — identical math to the
+  // App's height allocation (computeAskPickerLayout is shared).
+  const layout = useMemo(
     () =>
-      entries.map(([label, text]) =>
-        wrapToLines(`  ${label}) ${text}`, contentWidth).length
-      ),
-    [entries, contentWidth]
+      computeAskPickerLayout(question, options, contentWidth, maxHeight, selectedIndex),
+    [question, options, contentWidth, maxHeight, selectedIndex]
   );
-
-  // Windowed option slice: start at the SELECTED option, extend backward while
-  // rows fit, then forward while rows fit — the selection stays visible.
-  const window = useMemo(() => {
-    const n = entries.length;
-    if (n === 0) return { start: 0, end: 0 };
-    if (!Number.isFinite(optionsBudget)) return { start: 0, end: n };
-    let start = selectedIndex;
-    let end = selectedIndex + 1;
-    let used = optionRowCounts[selectedIndex] ?? 1;
-    while (start > 0 && used + optionRowCounts[start - 1] <= optionsBudget) {
-      start--;
-      used += optionRowCounts[start];
-    }
-    while (end < n && used + optionRowCounts[end] <= optionsBudget) {
-      used += optionRowCounts[end];
-      end++;
-    }
-    return { start, end };
-  }, [entries.length, optionRowCounts, selectedIndex, optionsBudget]);
-
+  const { questionShown, optionsBudget, window } = layout;
+  const cleanQuestion = useMemo(
+    () => cleanQuestionText(question, options),
+    [question, options]
+  );
+  const questionRows = wrapToLines(cleanQuestion, contentWidth).length;
   const visibleEntries = useMemo(
     () => entries.slice(window.start, window.end),
     [entries, window]
