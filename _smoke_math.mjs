@@ -80,13 +80,28 @@ eq(
 );
 eq(
   mathToUnicode("\\max \\min \\lim_{x \\to 0}"),
-  "max min limₓ→₀",
-  "math: operators stay words, \\to → arrow"
+  "max min lim_(x→0)",
+  "math: operators stay words, \\to → arrow (script with unmappable chars → ^()/_() fallback)"
 );
 eq(
   mathToUnicode("W(C) = \\frac{1}{|C|}\\sum_{i \\in C}\\|x_i - \\bar{x}_C\\|^2"),
-  "W(C) = (1)/(|C|)Σᵢ∈C‖xᵢ - x̄_C‖²",
+  "W(C) = (1)/(|C|)Σ_(i∈C)‖xᵢ - x̄_C‖²",
   "math: K-means variance formula (from real session log)"
+);
+eq(
+  mathToUnicode("p = \\frac{e^{X\\beta}}{1 + e^{X\\beta}}"),
+  "p = (e^(Xβ))/(1 + e^(Xβ))",
+  "math: sigmoid — superscript body with Greek/uppercase (no codepoint) falls back to explicit ^(...)"
+);
+eq(
+  mathToUnicode("e^{X\\beta} 2^{n} x^{2} ^{K}"),
+  "e^(Xβ) 2ⁿ x² ᴷ",
+  "math: script fallback only when a char lacks a codepoint; full maps stay compact"
+);
+eq(
+  mathToUnicode("\\hat{x}^2_{i}"),
+  "x̂²ᵢ",
+  "math: accent + fully-mappable scripts stay compact after accent"
 );
 
 // ---- Part B: extractMath ----

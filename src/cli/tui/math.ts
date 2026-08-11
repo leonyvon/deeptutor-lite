@@ -161,17 +161,23 @@ function applyAccent(content: string, mark: string, lastOnly: boolean): string {
   return [...content].map((c) => c + mark).join("");
 }
 
-/** Convert a sub/superscript body: map chars with codepoints, keep the rest.
+/** Convert a sub/superscript body to display form.
+ *
+ *  The body is FIRST run through the full LaTeX converter (so `^{X\beta}`
+ *  sees `\beta` → β instead of a char-by-char `\`+ᵇᵉᵗᵃ garbage mix), then
+ *  mapped onto Unicode script codepoints. If EVERY char has a codepoint the
+ *  compact script form is used (`_{i=1}` → ᵢ₌₁); otherwise the whole body
+ *  falls back to an explicit `^(...)` / `_(...)` marker — mixing baseline
+ *  chars into a script is unreadable (`e^{X\beta}` must not render as `eXβ`).
  *  Whitespace is dropped — LaTeX math mode ignores it inside scripts
  *  (`_{i \in C}` → ᵢ∈C, `^{K}` → ᴷ). */
 function convertScript(body: string, sub: boolean): string {
+  const plain = mathToUnicode(body);
   const map = sub ? SUBSCRIPT : SUPERSCRIPT;
-  let out = "";
-  for (const ch of body) {
-    if (/\s/.test(ch)) continue;
-    out += map[ch] ?? ch;
-  }
-  return out;
+  const chars = [...plain].filter((c) => !/\s/.test(c));
+  const mapped = chars.map((c) => map[c]);
+  if (mapped.every((m) => m !== undefined)) return mapped.join("");
+  return (sub ? "_(" : "^(") + chars.join("") + ")";
 }
 
 /** Convert a LaTeX math body to display Unicode. */
